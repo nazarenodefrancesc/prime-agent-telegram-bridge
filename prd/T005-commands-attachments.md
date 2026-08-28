@@ -6,7 +6,7 @@
 Expose the smallest useful Prime control surface through Telegram.
 
 ## Commands
-`/id`, `/help`, `/status`, `/new`, `/stop`, `/compact`, `/refine`.
+`/id`, `/help`, `/status`, `/new`, `/stop`, `/steer`, `/followup`, `/compact`, `/refine`.
 
 ## Attachments
 - Photos -> Prime RPC `images` as base64 + MIME type.

@@ -57,6 +57,8 @@ prime-telegram-bridge
 - `/status` — show Prime session/model status.
 - `/new` — start a fresh Prime session for this Telegram chat.
 - `/stop` — abort current Prime work.
+- `/steer <instruction>` — steer a currently running Prime turn.
+- `/followup <instruction>` — queue work after the current run.
 - `/compact [instructions]` — invoke Prime context compaction.
 - `/refine [instructions]` — invoke Prime continual-harness refinement.
 - `/help` — help.

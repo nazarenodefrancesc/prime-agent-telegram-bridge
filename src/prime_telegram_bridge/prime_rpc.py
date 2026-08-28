@@ -217,6 +217,12 @@ class PrimeRpcSession:
     async def abort(self) -> None:
         await self._send({"type": "abort"})
 
+    async def steer(self, message: str) -> None:
+        await self._send({"type": "steer", "message": message})
+
+    async def follow_up(self, message: str) -> None:
+        await self._send({"type": "follow_up", "message": message})
+
     async def compact(self, instructions: str | None = None) -> dict[str, Any]:
         command: dict[str, Any] = {"type": "compact"}
         if instructions:

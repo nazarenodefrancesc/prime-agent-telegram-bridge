@@ -175,6 +175,22 @@ class TelegramPrimeBridge:
                 await session.abort()
                 await self.telegram.send_message(msg.chat_id, "Abort requested.")
                 return
+            if command == "/steer":
+                if not arg.strip():
+                    await self.telegram.send_message(msg.chat_id, "Usage: /steer <instruction>")
+                    return
+                session = await self.prime.get(msg.chat_id)
+                await session.steer(arg.strip())
+                await self.telegram.send_message(msg.chat_id, "Steering instruction queued.")
+                return
+            if command == "/followup":
+                if not arg.strip():
+                    await self.telegram.send_message(msg.chat_id, "Usage: /followup <instruction>")
+                    return
+                session = await self.prime.get(msg.chat_id)
+                await session.follow_up(arg.strip())
+                await self.telegram.send_message(msg.chat_id, "Follow-up queued.")
+                return
             if command == "/compact":
                 session = await self.prime.get(msg.chat_id)
                 result = await session.compact(arg.strip() or None)
@@ -224,6 +240,8 @@ class TelegramPrimeBridge:
             "/status - show Prime session/model status\n"
             "/new - start a fresh Prime session\n"
             "/stop - abort current Prime operation\n"
+            "/steer <instruction> - steer a running Prime turn\n"
+            "/followup <instruction> - queue work after the current run\n"
             "/compact [instructions] - compact Prime context\n"
             "/refine [instructions] - run Prime continual-harness refinement\n"
             "/help - this message\n\n"
