@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Run the bridge as a long-lived user service after Prime Agent itself works from the same Unix account.
+Run the bridge as a long-lived service only after Prime Agent itself works from the same execution environment. Start with bootstrap-only Telegram access, then explicitly allow your numeric user ID.
 
 ## First bootstrap
 
@@ -18,7 +18,7 @@ Copy `systemd/prime-telegram-bridge.service.example` to:
 
 `~/.config/systemd/user/prime-telegram-bridge.service`
 
-Create a protected env file (example path used by the unit):
+Create a protected env file:
 
 ```bash
 mkdir -p ~/.config/prime-telegram-bridge
@@ -42,4 +42,21 @@ journalctl --user -u prime-telegram-bridge -f
 
 **Bot responds Access denied** — run `/id`, correct `TELEGRAM_ALLOWED_USER_IDS`, restart.
 
-**Session resumes but Python variables are gone after service restart** — expected in v0.1.0; history persists, volatile IPython process memory does not. See T007.
+**Saved Prime session file disappeared** — the next access starts a fresh session. The missing mapping is not treated as resumable.
+
+**Saved Prime session exists but is corrupt/incompatible** — normal access surfaces the error and keeps the mapping. Use `/new` to explicitly abandon it; the bridge proves a fresh session can start before replacing the stored mapping.
+
+**A later RLM result arrives after the first reply** — expected. v0.1.1 forwards later un-awaited Prime `agent_end` results to Telegram while the bridge is attached.
+
+**Bridge restarted and Python variables appear missing** — do not assume either outcome. Prime RPC is daemon-owned in current Prime releases, but live worker/kernel survival depends on the concrete lifecycle/failure. Conversation/session JSONL persistence is the supported bridge contract; validate volatile kernel behavior with a real smoke test before relying on it.
+
+**Same Telegram message appears twice after a crash** — possible at the Telegram/Prime admission boundary. See T007 for future durable idempotency/reconciliation work.
+
+## Release verification
+
+```bash
+./scripts/repo-check.sh
+./scripts/smoke-prime.sh
+```
+
+`repo-check.sh` is offline. `smoke-prime.sh` is the operator-owned compatibility gate against the actually installed Prime binary/authentication.

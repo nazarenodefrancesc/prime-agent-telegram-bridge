@@ -2,6 +2,6 @@
 
 **Status:** COMPLETE
 
-- Implementation complete for v0.1.0.
-- Acceptance criteria represented by code/tests/docs.
-- Durable evidence consolidated in `reports/REPORT-MVP.md`.
+- Prime control commands and Telegram photos/documents implemented.
+- v0.1.1 bounds downloads during streaming and uses private staged-file permissions.
+- `/compact` and `/refine` serialize with lifecycle-changing chat work.

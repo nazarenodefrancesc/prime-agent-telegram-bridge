@@ -1,15 +1,20 @@
-# T007 — Resident-daemon transport & richer streaming
+# T007 — Durable reconciliation & richer transport
 
 **Status:** DEFERRED
 
 ## Motivation
-v0.1.0 resumes persisted Prime sessions after bridge restart, but the RPC subprocess itself is bridge-owned. Its volatile IPython kernel therefore resets if the bridge process restarts.
+
+Prime Agent has routed RPC through the same daemon-owned runtime as its other clients since Prime 0.3.2. The bridge nevertheless cannot treat every client restart as proof that the live worker/IPython kernel stayed resident, and it currently has no durable reconciliation protocol for outputs produced while Telegram transport is offline.
 
 ## Future scope
-- Attach to a resident Prime daemon session independent of bridge lifetime.
-- Stream partial assistant output to Telegram via message edits.
-- Explicit concurrent steering/follow-up UX instead of per-chat lifecycle serialization.
-- Optional Telegram topic -> Prime child/root routing.
 
-## Non-goal for v0.1.0
-Do not add this complexity before the thin RPC adapter is proven in real use.
+- Validate and, if useful, explicitly attach/observe resident Prime daemon sessions across bridge restarts.
+- Persist a Telegram delivery watermark and reconcile Prime outputs produced while the bridge was offline.
+- Add idempotency/deduplication around the Telegram update -> Prime prompt admission ambiguity.
+- Stream partial assistant output to Telegram via message edits.
+- Optional Telegram topic -> Prime child/root routing.
+- Richer concurrent normal-message steering UX, including images.
+
+## Non-goal for v0.1.1
+
+Do not invent a second agent runtime or private Prime daemon protocol. Keep using documented RPC/observation surfaces and validate lifecycle behavior against the installed Prime release.

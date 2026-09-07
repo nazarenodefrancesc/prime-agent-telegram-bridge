@@ -3,11 +3,14 @@
 **Status:** COMPLETE
 
 ## Objective
+
 Provide deterministic offline gates plus explicit real-environment smoke checks and service docs.
 
 ## Acceptance criteria
-- `scripts/repo-check.sh` runs compile/tests/git-whitespace checks and runs Ruff when dev extras are installed.
+
+- `scripts/repo-check.sh` runs compile/tests/git-whitespace checks and Ruff when dev extras are installed.
 - `scripts/smoke-prime.sh` verifies a real Prime binary and RPC startup preconditions without modifying source.
 - systemd user service example is present.
 - Operations, architecture, security and Prime-compatibility docs exist.
-- Repository has meaningful git history and release tag.
+- Repository has meaningful git history and release tags.
+- Release reports distinguish PASS from NOT RUN and do not promote missing real-Prime validation to success.

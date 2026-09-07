@@ -2,5 +2,6 @@
 
 **Status:** DEFERRED
 
-- Deliberately excluded from v0.1.0.
-- Revisit only after real Telegram/Prime usage validates the basic adapter.
+- v0.1.1 now forwards later autonomous `agent_end` runs while the bridge is attached.
+- Still deferred: offline output reconciliation, durable idempotency/deduplication, partial Telegram streaming and richer routing.
+- Prime RPC is daemon-owned in current Prime releases; do not assume live kernel survival across every client restart without a real-environment lifecycle test.
