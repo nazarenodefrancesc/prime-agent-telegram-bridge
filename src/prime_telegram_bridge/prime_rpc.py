@@ -6,8 +6,9 @@ import json
 import logging
 import os
 from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any
 
 from .config import BridgeConfig
 from .state import secure_directory

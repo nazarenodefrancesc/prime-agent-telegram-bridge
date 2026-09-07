@@ -1,31 +1,26 @@
-# REPORT — Prime Telegram Bridge v0.1.1
+# REPORT — Prime Agent - Telegram Bridge v0.1.2
 
 ## TL;DR
 
-The second-pass audit found substantive correctness and security issues in v0.1.0, especially around asynchronous RLM follow-up runs, subprocess failure/restart ownership, Telegram token leakage in error paths, attachment buffering, session recovery and update acknowledgement. v0.1.1 fixes those issues while keeping the architecture a thin Telegram-to-Prime RPC adapter.
+The public-repository follow-up audit found one release-blocking security issue: `httpx` logs the full request URL at INFO, and Telegram embeds the bot token in that URL path. v0.1.2 suppresses those dependency INFO logs and adds formatter-level token redaction as defense-in-depth. It also replaces indefinite staged-document retention with configurable 24-hour cleanup that runs at startup and hourly without following symlinks.
+
+The bridge remains a thin Telegram-to-Prime JSONL RPC adapter. Prime/RLM runtime behavior, session persistence and command semantics are intentionally unchanged.
 
 ## Implemented evidence
 
-- Configuration/bootstrap validation including explicit-empty mapping and `PRIME_THINKING`: `tests/test_config.py`.
-- Atomic/private chat/session mapping and directory permissions: `tests/test_state.py`.
-- Telegram parsing, exact UTF-16-safe chunking, token-redacted API failures and bounded downloads: `tests/test_telegram_api.py`.
-- Prime RPC startup/prompt/new-session/crash/autonomous-RLM/error/env-scrub contracts: `tests/test_prime_rpc.py` + fake subprocesses.
-- Session-manager single-flight/recovery, output forwarding, polling frontier and staged-file permissions: `tests/test_bridge.py`.
-- Offline quality gate: `scripts/repo-check.sh`.
-- Real Prime environment gate: `scripts/smoke-prime.sh`.
+- Logging hardening and secret-redaction coverage: `src/prime_telegram_bridge/logging_utils.py`, `tests/test_logging.py`.
+- Existing Telegram API exception redaction remains covered in `tests/test_telegram_api.py`.
+- Attachment retention and symlink-safe cleanup: `src/prime_telegram_bridge/state.py`, `tests/test_state.py`.
+- Non-fatal cleanup integration and existing bridge regression coverage: `src/prime_telegram_bridge/bridge.py`, `tests/test_bridge.py`.
+- Retention configuration/default validation: `src/prime_telegram_bridge/config.py`, `tests/test_config.py`.
+- Existing Prime RPC/RLM regressions remain covered by `tests/test_prime_rpc.py`.
 
-## High-value defects fixed
+## Public-audit defects fixed
 
-1. **Lost RLM follow-up output:** v0.1.0 returned the first awaited `agent_end` only. A child could later message the parent, trigger a new parent run, and that answer would remain inside Prime. v0.1.1 forwards un-awaited later runs.
-2. **Hung ask on RPC death:** prompt waiters now fail when their owning subprocess stdout closes.
-3. **Restart race:** requests/waiters are generation-bound so an old reader cannot fail a replacement client's work.
-4. **Stale resume after `/new`:** the session's resume target is updated to the new `sessionFile`; Prime cancellation is respected.
-5. **First-session race:** concurrent first messages use one initialization flight.
-6. **Unsafe automatic state destruction:** missing files recover automatically, while generic resume errors preserve the mapping; `/new` is the explicit recovery path.
-7. **Telegram token exposure:** Bot API errors no longer surface token-bearing request URLs; descriptions are redacted; Prime does not intentionally inherit Telegram/bridge env variables.
-8. **Attachment memory bound:** downloads are streamed under the configured byte cap.
-9. **Telegram text mutation:** chunking no longer strips/reinserts whitespace and counts astral Unicode correctly under the platform's UTF-16 units.
-10. **Premature update acknowledgement:** poll offset stays behind the oldest in-flight Telegram update.
+1. **Telegram token in dependency INFO logs:** `httpx`/`httpcore` are forced to WARNING or stricter and the root bridge formatter redacts the bot token from fully rendered lines and tracebacks.
+2. **Indefinite staged-document retention:** `TELEGRAM_ATTACHMENT_RETENTION_HOURS` defaults to 24 hours; cleanup executes at startup and hourly.
+3. **Cleanup path safety:** the inbox root must be a real directory, symlinks are not followed, and empty chat directories are removed only inside the inbox tree.
+4. **Cleanup availability:** per-entry and bridge-level cleanup failures are logged and skipped rather than stopping the bridge.
 
 ## Known deferred items
 
@@ -36,17 +31,16 @@ T007 remains deferred:
 - partial Telegram streaming/message edits;
 - stronger/richer transport routing.
 
-Environment scrubbing is explicitly **not** represented as a same-UID security sandbox.
+Environment scrubbing and log redaction are explicitly **not** represented as a same-UID security sandbox.
 
 ## Validation snapshot
 
-Validation executed in the delivery environment for v0.1.1:
+Validation executed in the delivery environment for v0.1.2:
 
-- `python3 -m pytest -q`: **PASS — 32 tests**.
-- `PYTHONWARNINGS=error python3 -m pytest -q`: **PASS — 32 tests**, after pinning the pytest-asyncio fixture loop scope.
+- `python3 -m pytest -q`: **PASS — 41 tests**.
+- `PYTHONWARNINGS=error python3 -m pytest -q`: **PASS — 41 tests**.
 - `python3 -m compileall -q src tests`: **PASS**.
-- source/test line-length audit against configured 110 columns: **PASS**.
-- `git diff --check`: **PASS** before commit.
-- Ruff: **NOT RUN** because it is not installed in the delivery environment and network access is disabled; an attempted install could not reach the package index. `repo-check.sh` runs Ruff automatically when dev extras are present.
-- `scripts/smoke-prime.sh`: **NOT RUN** because the user's real Prime installation/authentication is not mounted in this environment. This remains an explicit operator gate, never counted as PASS.
-- Final `git fsck`, clean-tree, tag and packaged-repository checks are recorded by the release commit/package validation.
+- `git diff --check`: **PASS**.
+- Ruff: **NOT RUN** because it is not installed in the delivery environment; `repo-check.sh` runs it automatically when dev extras are present.
+- `git fsck --full --no-dangling`: **PASS** on the local release repository.
+- `scripts/smoke-prime.sh`: **NOT RUN** in this environment because the user's real Prime installation/authentication is not mounted here; prior live Telegram usage confirms the deployed v0.1.1 bridge path but is not counted as a v0.1.2 smoke PASS.

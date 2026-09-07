@@ -18,13 +18,13 @@ Prime daemon/session + IPython + RLM subagents + continual harness
 
 The bridge owns only transport, access control, attachment staging, and `chat_id -> Prime session` mapping. Prime remains responsible for model/provider auth, session history, tools, IPython, RLM, compaction, refinement and recursive agents.
 
-v0.1.1 also forwards **later Prime runs** back to Telegram while the bridge is attached. This matters when an RLM child reports back after the initiating parent turn has already ended, or queued Prime work starts a new run.
+v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and automatically expires staged documents after a configurable retention window.
 
 ## Security model
 
 Prime Agent can execute code and edit files with your local user permissions. **Never expose this bot publicly without an allowlist.** The bridge fails closed for agent access: if `TELEGRAM_ALLOWED_USER_IDS` is empty, only `/id` works.
 
-The Prime subprocess environment deliberately drops `TELEGRAM_*` and `BRIDGE_*` variables while retaining Prime/provider credentials. This is **secret minimization, not a sandbox**. If Prime and the bridge run under the same Unix account, do not treat environment scrubbing as a hard isolation boundary. Use a separate user/container/VM if you need one.
+The Prime subprocess environment deliberately drops `TELEGRAM_*` and `BRIDGE_*` variables while retaining Prime/provider credentials. The bridge also suppresses token-bearing `httpx`/`httpcore` INFO request logs and applies final log-line secret redaction as defense-in-depth. This is **secret minimization, not a sandbox**. If Prime and the bridge run under the same Unix account, do not treat environment scrubbing as a hard isolation boundary. Use a separate user/container/VM if you need one.
 
 ## Quick start
 
@@ -69,7 +69,7 @@ prime-telegram-bridge
 - `/refine [instructions]` — invoke Prime continual-harness refinement.
 - `/help` — help.
 
-Normal text messages are forwarded to Prime. Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path.
+Normal text messages are forwarded to Prime. Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path. Staged documents are retained temporarily so later RLM/sub-agent work can still read them, then purged automatically (24 hours by default via `TELEGRAM_ATTACHMENT_RETENTION_HOURS`).
 
 ## Persistence and delivery semantics
 

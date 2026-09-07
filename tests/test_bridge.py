@@ -20,6 +20,7 @@ def make_config(tmp_path: Path) -> BridgeConfig:
         telegram_allowed_chat_ids=frozenset(),
         telegram_poll_timeout=1,
         telegram_max_attachment_bytes=1024,
+        telegram_attachment_retention_hours=24,
         prime_agent_bin="prime-agent",
         prime_workdir=tmp_path,
         prime_session_dir=tmp_path / "sessions",
@@ -218,3 +219,18 @@ async def test_document_staging_uses_private_permissions_and_safe_name(tmp_path:
     assert target.stat().st_mode & 0o777 == 0o600
     assert target.parent.stat().st_mode & 0o777 == 0o700
     assert str(target) in note
+
+
+@pytest.mark.asyncio
+async def test_attachment_cleanup_failure_does_not_stop_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    bridge = TelegramPrimeBridge(make_config(tmp_path))
+    await bridge.telegram.close()
+    bridge.telegram = FakeTelegram()  # type: ignore[assignment]
+
+    def fail_cleanup(*_args: Any, **_kwargs: Any):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr("prime_telegram_bridge.bridge.cleanup_attachment_inbox", fail_cleanup)
+    await bridge._cleanup_attachments_once()

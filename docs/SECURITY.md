@@ -17,9 +17,11 @@ Prime itself runs local tools with the permissions available to its process. The
 - Bridge state never stores Telegram bot tokens or model/provider API keys.
 - Prime's subprocess environment intentionally removes `TELEGRAM_*` and `BRIDGE_*` variables while keeping Prime/provider credentials.
 - Telegram API exceptions are rewrapped so token-bearing Bot API URLs are not surfaced; Telegram error descriptions are token-redacted.
+- `httpx` and `httpcore` are forced to WARNING or above because their INFO request logs include Telegram's token-bearing URL; the bridge formatter additionally redacts the bot token from fully rendered log lines and tracebacks.
 - Bridge-owned directories are `0700` and state/staged files are `0600` where the filesystem supports Unix modes.
 - Telegram document names are reduced to safe basenames and staged under a fixed inbox root.
 - Attachment downloads are streamed under `TELEGRAM_MAX_ATTACHMENT_BYTES`; the bridge stops once the bound is exceeded instead of first buffering an arbitrarily large body.
+- Staged documents are retained only for `TELEGRAM_ATTACHMENT_RETENTION_HOURS` (24 hours by default). Cleanup runs at startup and hourly, removes expired files and empty chat directories, and never follows symlinks.
 - Unsupported empty Telegram message types are ignored rather than converted into generic prompts.
 - No user-controlled shell command string is constructed by the bridge.
 - Prime model/provider auth stays outside this repository.
@@ -42,3 +44,11 @@ The bridge holds Telegram acknowledgement behind in-flight handling, but Telegra
 - Keep the bot in private chat unless group access is intentional.
 - Rotate the bot token immediately if it appears in logs, shell history, a commit, or a screenshot.
 - Review Prime's own tool/security settings before enabling unattended or autonomous work.
+
+## Log-secret defense in depth
+
+Telegram requires the bot token inside the Bot API URL path. `httpx` normally logs full request URLs at INFO, so relying only on exception redaction is insufficient. The bridge therefore suppresses INFO logs from `httpx`/`httpcore` and applies a formatter-level token redaction after the full record (including exception traceback) is rendered. This protects normal bridge logging, but operators must still treat any external/custom log handler as part of their own security boundary.
+
+## Attachment retention
+
+Documents are not deleted immediately after the initiating reply because later Prime/RLM child-to-parent work can still need the staged local path. The default 24-hour retention is a compromise between asynchronous-agent continuity and data minimization. Cleanup ignores symlinks and refuses a symlinked inbox root, so it does not intentionally traverse outside the bridge-owned inbox. A same-UID hostile process is still outside the bridge threat boundary and should be isolated with a separate user/container when required.

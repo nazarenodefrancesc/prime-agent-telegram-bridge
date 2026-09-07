@@ -6,12 +6,13 @@ import json
 import logging
 import mimetypes
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .config import BridgeConfig
 from .prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcSession
-from .state import ChatSessionRecord, StateStore, secure_directory
+from .state import ChatSessionRecord, StateStore, cleanup_attachment_inbox, secure_directory
 from .telegram_api import IncomingMessage, TelegramClient, parse_update
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,7 @@ class TelegramPrimeBridge:
         self.prime = PrimeSessionManager(config, output_handler=self._on_prime_output)
         self._stopping = asyncio.Event()
         self._update_tasks: set[asyncio.Task[Any]] = set()
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     def authorized(self, msg: IncomingMessage) -> bool:
         if msg.user_id not in self.config.telegram_allowed_user_ids:
@@ -177,6 +179,32 @@ class TelegramPrimeBridge:
             await self.telegram.send_message(chat_id, f"Prime Agent error: {outcome.error}")
         elif outcome.text:
             await self.telegram.send_message(chat_id, outcome.text)
+
+    async def _cleanup_attachments_once(self) -> None:
+        inbox = self.config.state_dir / "inbox"
+        try:
+            deleted, removed_dirs = await asyncio.to_thread(
+                cleanup_attachment_inbox,
+                inbox,
+                self.config.telegram_attachment_retention_hours,
+            )
+            if deleted or removed_dirs:
+                logger.info(
+                    "Attachment retention cleanup removed %s file(s) and %s empty directories",
+                    deleted,
+                    removed_dirs,
+                )
+        except Exception:
+            # Retention is hygiene, not a reason to take the control plane down.
+            logger.exception("Attachment retention cleanup failed; bridge will continue")
+
+    async def _attachment_cleanup_loop(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=3600)
+                break
+            except TimeoutError:
+                await self._cleanup_attachments_once()
 
     @staticmethod
     def _poll_offset(
@@ -197,6 +225,11 @@ class TelegramPrimeBridge:
                 "No TELEGRAM_ALLOWED_USER_IDS configured. Bootstrap-only mode: "
                 "/id works, agent access is denied."
             )
+
+        await self._cleanup_attachments_once()
+        self._cleanup_task = asyncio.create_task(
+            self._attachment_cleanup_loop(), name="attachment-retention"
+        )
 
         in_flight: dict[int, asyncio.Task[Any]] = {}
         handled_unacked: set[int] = set()
@@ -262,6 +295,10 @@ class TelegramPrimeBridge:
 
     async def close(self) -> None:
         self._stopping.set()
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            await asyncio.gather(self._cleanup_task, return_exceptions=True)
+            self._cleanup_task = None
         for task in list(self._update_tasks):
             task.cancel()
         if self._update_tasks:

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.2 — 2026-09-07
+
+Security/data-retention hardening after the repository was made public.
+
+### Fixed
+
+- Prevent Telegram bot tokens from leaking through `httpx`/`httpcore` INFO request URL logs.
+- Apply formatter-level Telegram token redaction to fully rendered bridge log lines and exception tracebacks as defense-in-depth.
+- Add `TELEGRAM_ATTACHMENT_RETENTION_HOURS` (default 24 hours, minimum 1) and purge expired staged Telegram documents at startup and hourly.
+- Remove empty inbox directories after retention cleanup.
+- Refuse a symlinked inbox root and never follow nested symlinks during cleanup, preventing intentional traversal outside the bridge inbox.
+- Keep attachment-cleanup failures non-fatal so retention hygiene cannot take the bridge control plane down.
+
+### Unchanged
+
+- No GitHub Actions/CI added.
+- Prime RPC, RLM follow-up delivery, session persistence and Telegram command semantics are unchanged.
+
 ## 0.1.1 — 2026-09-07
 
 Hardening release after a second architecture/security audit.

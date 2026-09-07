@@ -51,3 +51,19 @@ def test_prime_thinking_is_normalized_and_validated(tmp_path: Path):
     assert load_config({**base, "PRIME_THINKING": " HIGH "}).prime_thinking == "high"
     with pytest.raises(ConfigError, match="PRIME_THINKING"):
         load_config({**base, "PRIME_THINKING": "turbo"})
+
+
+def test_attachment_retention_defaults_to_24_hours_and_is_validated(tmp_path: Path):
+    base = {
+        "TELEGRAM_BOT_TOKEN": "token",
+        "BRIDGE_STATE_DIR": str(tmp_path / "state"),
+        "PRIME_WORKDIR": str(tmp_path),
+    }
+    assert load_config(base).telegram_attachment_retention_hours == 24
+    assert (
+        load_config({**base, "TELEGRAM_ATTACHMENT_RETENTION_HOURS": "72"})
+        .telegram_attachment_retention_hours
+        == 72
+    )
+    with pytest.raises(ConfigError, match="TELEGRAM_ATTACHMENT_RETENTION_HOURS"):
+        load_config({**base, "TELEGRAM_ATTACHMENT_RETENTION_HOURS": "0"})

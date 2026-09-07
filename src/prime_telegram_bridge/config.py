@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 
 class ConfigError(ValueError):
@@ -57,6 +57,7 @@ class BridgeConfig:
     telegram_allowed_chat_ids: frozenset[int]
     telegram_poll_timeout: int
     telegram_max_attachment_bytes: int
+    telegram_attachment_retention_hours: int
     prime_agent_bin: str
     prime_workdir: Path
     prime_session_dir: Path
@@ -100,6 +101,12 @@ def load_config(env: Mapping[str, str] | None = None) -> BridgeConfig:
             20 * 1024 * 1024,
             "TELEGRAM_MAX_ATTACHMENT_BYTES",
             1024,
+        ),
+        telegram_attachment_retention_hours=_parse_int(
+            env.get("TELEGRAM_ATTACHMENT_RETENTION_HOURS"),
+            24,
+            "TELEGRAM_ATTACHMENT_RETENTION_HOURS",
+            1,
         ),
         prime_agent_bin=env.get("PRIME_AGENT_BIN", "prime-agent").strip() or "prime-agent",
         prime_workdir=workdir,

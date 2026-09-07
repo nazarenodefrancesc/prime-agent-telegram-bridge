@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 import sys
 
 from .bridge import TelegramPrimeBridge
 from .config import ConfigError, load_config
+from .logging_utils import configure_logging
 
 
 async def _run() -> None:
     config = load_config()
-    logging.basicConfig(
-        level=getattr(logging, config.log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    configure_logging(
+        config.log_level,
+        telegram_bot_token=config.telegram_bot_token,
     )
     bridge = TelegramPrimeBridge(config)
     loop = asyncio.get_running_loop()

@@ -24,6 +24,7 @@ def make_config(tmp_path: Path, binary: str) -> BridgeConfig:
         telegram_allowed_chat_ids=frozenset(),
         telegram_poll_timeout=1,
         telegram_max_attachment_bytes=1024,
+        telegram_attachment_retention_hours=24,
         prime_agent_bin=binary,
         prime_workdir=tmp_path,
         prime_session_dir=tmp_path / "sessions",
