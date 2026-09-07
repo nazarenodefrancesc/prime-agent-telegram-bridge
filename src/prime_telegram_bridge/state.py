@@ -8,6 +8,17 @@ from pathlib import Path
 from typing import Any
 
 
+def secure_directory(path: Path) -> None:
+    """Create a bridge-owned directory and restrict it to the current user."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        # Some non-POSIX filesystems may not support chmod. Creation still
+        # succeeds; deployment docs require an OS-level permission review.
+        pass
+
+
 @dataclass(slots=True)
 class ChatSessionRecord:
     chat_id: int
@@ -21,7 +32,7 @@ class StateStore:
 
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        secure_directory(self.path.parent)
 
     def _load_raw(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -37,9 +48,12 @@ class StateStore:
         raw = data["chats"].get(str(chat_id))
         if not isinstance(raw, dict):
             return None
+        session_file = str(raw.get("session_file", ""))
+        if not session_file:
+            return None
         return ChatSessionRecord(
             chat_id=chat_id,
-            session_file=str(raw.get("session_file", "")),
+            session_file=session_file,
             session_id=raw.get("session_id"),
             session_name=raw.get("session_name"),
         )
@@ -55,7 +69,7 @@ class StateStore:
         self._atomic_write(data)
 
     def _atomic_write(self, data: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        secure_directory(self.path.parent)
         fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

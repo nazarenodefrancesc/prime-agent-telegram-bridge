@@ -10,6 +10,9 @@ class ConfigError(ValueError):
     """Raised when bridge configuration is invalid."""
 
 
+VALID_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
+
+
 def _parse_int_set(value: str | None, name: str) -> frozenset[int]:
     if not value or not value.strip():
         return frozenset()
@@ -37,6 +40,16 @@ def _parse_int(value: str | None, default: int, name: str, minimum: int = 0) -> 
     return parsed
 
 
+def _parse_thinking(value: str | None) -> str | None:
+    level = (value or "").strip().lower()
+    if not level:
+        return None
+    if level not in VALID_THINKING_LEVELS:
+        allowed = ", ".join(sorted(VALID_THINKING_LEVELS))
+        raise ConfigError(f"PRIME_THINKING must be one of: {allowed}")
+    return level
+
+
 @dataclass(frozen=True, slots=True)
 class BridgeConfig:
     telegram_bot_token: str
@@ -60,7 +73,11 @@ class BridgeConfig:
 
 
 def load_config(env: Mapping[str, str] | None = None) -> BridgeConfig:
-    env = env or os.environ
+    # An explicitly empty mapping is a valid test/operator input and must not
+    # silently fall back to the host process environment.
+    if env is None:
+        env = os.environ
+
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise ConfigError("TELEGRAM_BOT_TOKEN is required")
@@ -89,7 +106,7 @@ def load_config(env: Mapping[str, str] | None = None) -> BridgeConfig:
         prime_session_dir=session_dir,
         prime_provider=(env.get("PRIME_PROVIDER") or "").strip() or None,
         prime_model=(env.get("PRIME_MODEL") or "").strip() or None,
-        prime_thinking=(env.get("PRIME_THINKING") or "").strip() or None,
+        prime_thinking=_parse_thinking(env.get("PRIME_THINKING")),
         state_dir=state_dir,
         log_level=(env.get("LOG_LEVEL") or "INFO").upper(),
     )

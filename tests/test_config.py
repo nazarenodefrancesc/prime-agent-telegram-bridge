@@ -25,6 +25,12 @@ def test_missing_token_is_rejected():
         load_config({})
 
 
+def test_explicit_empty_mapping_does_not_fall_back_to_os_environ(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "host-secret")
+    with pytest.raises(ConfigError):
+        load_config({})
+
+
 def test_empty_allowlist_is_bootstrap_only(tmp_path: Path):
     config = load_config(
         {
@@ -34,3 +40,14 @@ def test_empty_allowlist_is_bootstrap_only(tmp_path: Path):
         }
     )
     assert config.bootstrap_only
+
+
+def test_prime_thinking_is_normalized_and_validated(tmp_path: Path):
+    base = {
+        "TELEGRAM_BOT_TOKEN": "token",
+        "BRIDGE_STATE_DIR": str(tmp_path / "state"),
+        "PRIME_WORKDIR": str(tmp_path),
+    }
+    assert load_config({**base, "PRIME_THINKING": " HIGH "}).prime_thinking == "high"
+    with pytest.raises(ConfigError, match="PRIME_THINKING"):
+        load_config({**base, "PRIME_THINKING": "turbo"})

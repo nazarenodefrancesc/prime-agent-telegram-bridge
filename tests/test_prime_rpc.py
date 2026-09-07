@@ -1,28 +1,30 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from prime_telegram_bridge.config import BridgeConfig
-from prime_telegram_bridge.prime_rpc import PrimeRpcSession
+from prime_telegram_bridge.prime_rpc import (
+    PrimeAgentOutcome,
+    PrimeRpcError,
+    PrimeRpcSession,
+    _assistant_outcome_from_agent_end,
+    _prime_subprocess_env,
+)
 
 
-@pytest.mark.asyncio
-async def test_rpc_session_prompt_round_trip(tmp_path: Path):
-    fake = Path(__file__).with_name("fake_prime_rpc.py")
-    # Use a small wrapper shell so PrimeRpcSession's binary+args contract can be tested without Prime installed.
-    wrapper = tmp_path / "fake-prime"
-    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} {fake} \"$@\"\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-    cfg = BridgeConfig(
+def make_config(tmp_path: Path, binary: str) -> BridgeConfig:
+    return BridgeConfig(
         telegram_bot_token="x",
         telegram_allowed_user_ids=frozenset({1}),
         telegram_allowed_chat_ids=frozenset(),
         telegram_poll_timeout=1,
         telegram_max_attachment_bytes=1024,
-        prime_agent_bin=str(wrapper),
+        prime_agent_bin=binary,
         prime_workdir=tmp_path,
         prime_session_dir=tmp_path / "sessions",
         prime_provider=None,
@@ -31,7 +33,20 @@ async def test_rpc_session_prompt_round_trip(tmp_path: Path):
         state_dir=tmp_path / "state",
         log_level="DEBUG",
     )
-    session = PrimeRpcSession(cfg, chat_id=1)
+
+
+def make_wrapper(tmp_path: Path, script: Path, name: str = "fake-prime") -> Path:
+    wrapper = tmp_path / name
+    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} {script} \"$@\"\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+@pytest.mark.asyncio
+async def test_rpc_session_prompt_round_trip(tmp_path: Path):
+    fake = Path(__file__).with_name("fake_prime_rpc.py")
+    wrapper = make_wrapper(tmp_path, fake)
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
     try:
         await session.start()
         answer = await session.ask("hello", timeout=5)
@@ -40,3 +55,204 @@ async def test_rpc_session_prompt_round_trip(tmp_path: Path):
         assert state["sessionId"] == "fake-session"
     finally:
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_new_session_updates_resume_target(tmp_path: Path):
+    fake = Path(__file__).with_name("fake_prime_rpc.py")
+    wrapper = make_wrapper(tmp_path, fake)
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
+    try:
+        await session.start()
+        before = session.resume_session
+        cancelled, state = await session.new_session()
+        assert not cancelled
+        assert state["sessionId"] == "fake-session-1"
+        assert session.resume_session == state["sessionFile"]
+        assert session.resume_session != before
+    finally:
+        await session.close()
+
+
+def test_prime_subprocess_env_strips_bridge_secrets_but_keeps_provider_keys():
+    env = _prime_subprocess_env(
+        {
+            "TELEGRAM_BOT_TOKEN": "secret",
+            "TELEGRAM_ALLOWED_USER_IDS": "1",
+            "BRIDGE_STATE_DIR": "/private",
+            "OPENROUTER_API_KEY": "provider-key",
+            "PRIME_API_KEY": "prime-key",
+            "PATH": "/bin",
+        }
+    )
+    assert "TELEGRAM_BOT_TOKEN" not in env
+    assert "TELEGRAM_ALLOWED_USER_IDS" not in env
+    assert "BRIDGE_STATE_DIR" not in env
+    assert env["OPENROUTER_API_KEY"] == "provider-key"
+    assert env["PRIME_API_KEY"] == "prime-key"
+    assert env["PATH"] == "/bin"
+
+
+def test_prime_subprocess_env_respects_explicit_empty_mapping(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PRIME_API_KEY", "host-key")
+    assert _prime_subprocess_env({}) == {}
+
+
+def test_agent_end_outcome_extracts_text_and_error():
+    text = _assistant_outcome_from_agent_end(
+        {
+            "type": "agent_end",
+            "messages": [
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+            ],
+        }
+    )
+    assert text == PrimeAgentOutcome(text="ok")
+
+    error = _assistant_outcome_from_agent_end(
+        {
+            "type": "agent_end",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [],
+                    "stopReason": "error",
+                    "errorMessage": "provider failed",
+                }
+            ],
+        }
+    )
+    assert error == PrimeAgentOutcome(error="provider failed")
+
+
+@pytest.mark.asyncio
+async def test_process_exit_fails_ask_without_waiting_for_timeout(tmp_path: Path):
+    script = tmp_path / "crash_rpc.py"
+    script.write_text(
+        """
+import json, sys
+from pathlib import Path
+for raw in sys.stdin:
+    cmd=json.loads(raw); typ=cmd.get('type'); rid=cmd.get('id')
+    if typ=='get_state':
+        data = {
+            'sessionFile': str(Path.cwd()/'s.jsonl'),
+            'sessionId': 's',
+            'isStreaming': False,
+            'thinkingLevel': 'medium',
+        }
+        response = {'id':rid, 'type':'response', 'command':typ, 'success':True, 'data':data}
+        print(json.dumps(response), flush=True)
+    elif typ=='prompt':
+        response = {'id':rid, 'type':'response', 'command':typ, 'success':True}
+        print(json.dumps(response), flush=True)
+        sys.exit(17)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = make_wrapper(tmp_path, script, "crash-prime")
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
+    try:
+        await session.start()
+        with pytest.raises(PrimeRpcError, match="stdout closed"):
+            await asyncio.wait_for(session.ask("boom", timeout=60), timeout=3)
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_later_autonomous_agent_end_is_delivered_once(tmp_path: Path):
+    script = tmp_path / "autonomous_rpc.py"
+    script.write_text(
+        """
+import json, sys, time
+from pathlib import Path
+for raw in sys.stdin:
+    cmd=json.loads(raw); typ=cmd.get('type'); rid=cmd.get('id')
+    if typ=='get_state':
+        data = {
+            'sessionFile': str(Path.cwd()/'s.jsonl'),
+            'sessionId': 's',
+            'isStreaming': False,
+            'thinkingLevel': 'medium',
+        }
+        response = {'id':rid, 'type':'response', 'command':typ, 'success':True, 'data':data}
+        print(json.dumps(response), flush=True)
+    elif typ=='prompt':
+        response = {'id':rid, 'type':'response', 'command':typ, 'success':True}
+        print(json.dumps(response), flush=True)
+        print(json.dumps({'type':'agent_start'}), flush=True)
+        first = {
+            'type':'agent_end',
+            'messages':[{'role':'assistant','content':[{'type':'text','text':'first'}],'stopReason':'stop'}],
+        }
+        print(json.dumps(first), flush=True)
+        time.sleep(0.05)
+        print(json.dumps({'type':'agent_start'}), flush=True)
+        second = {
+            'type':'agent_end',
+            'messages':[
+                {
+                    'role':'assistant',
+                    'content':[{'type':'text','text':'child follow-up'}],
+                    'stopReason':'stop',
+                }
+            ],
+        }
+        print(json.dumps(second), flush=True)
+    elif typ=='get_last_assistant_text':
+        response = {
+            'id':rid, 'type':'response', 'command':typ, 'success':True, 'data':{'text':'first'}
+        }
+        print(json.dumps(response), flush=True)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = make_wrapper(tmp_path, script, "autonomous-prime")
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
+    received: list[PrimeAgentOutcome] = []
+    arrived = asyncio.Event()
+
+    async def listener(outcome: PrimeAgentOutcome) -> None:
+        received.append(outcome)
+        arrived.set()
+
+    session.add_agent_end_listener(listener)
+    try:
+        await session.start()
+        assert await session.ask("go", timeout=5) == "first"
+        await asyncio.wait_for(arrived.wait(), timeout=2)
+        assert received == [PrimeAgentOutcome(text="child follow-up")]
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_error_does_not_fall_back_to_stale_text(tmp_path: Path):
+    session = PrimeRpcSession(make_config(tmp_path, os.devnull), chat_id=1)
+    received: list[PrimeAgentOutcome] = []
+    done = asyncio.Event()
+
+    async def listener(outcome: PrimeAgentOutcome) -> None:
+        received.append(outcome)
+        done.set()
+
+    session.add_agent_end_listener(listener)
+    session._publish_autonomous_agent_end(
+        {
+            "type": "agent_end",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [],
+                    "stopReason": "error",
+                    "errorMessage": "later failure",
+                }
+            ],
+        }
+    )
+    await asyncio.wait_for(done.wait(), timeout=1)
+    assert received == [PrimeAgentOutcome(error="later failure")]
+    await session.close()

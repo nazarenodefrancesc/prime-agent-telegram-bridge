@@ -7,14 +7,17 @@ import logging
 import mimetypes
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from .config import BridgeConfig
-from .prime_rpc import PrimeRpcError, PrimeRpcSession
-from .state import ChatSessionRecord, StateStore
+from .prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcSession
+from .state import ChatSessionRecord, StateStore, secure_directory
 from .telegram_api import IncomingMessage, TelegramClient, parse_update
 
 logger = logging.getLogger(__name__)
+
+
+OutputHandler = Callable[[int, PrimeAgentOutcome], Awaitable[None]]
 
 
 def _safe_filename(name: str) -> str:
@@ -24,34 +27,84 @@ def _safe_filename(name: str) -> str:
 
 
 class PrimeSessionManager:
-    def __init__(self, config: BridgeConfig):
+    def __init__(self, config: BridgeConfig, *, output_handler: OutputHandler | None = None):
         self.config = config
         self.store = StateStore(config.state_dir / "state.json")
         self.sessions: dict[int, PrimeRpcSession] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        self._init_locks: dict[int, asyncio.Lock] = {}
+        self._output_handler = output_handler
 
     def lock_for(self, chat_id: int) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())
+
+    def _init_lock_for(self, chat_id: int) -> asyncio.Lock:
+        return self._init_locks.setdefault(chat_id, asyncio.Lock())
+
+    def _attach_output_handler(self, chat_id: int, session: PrimeRpcSession) -> None:
+        if not self._output_handler:
+            return
+
+        async def on_output(outcome: PrimeAgentOutcome) -> None:
+            assert self._output_handler is not None
+            await self._output_handler(chat_id, outcome)
+
+        session.add_agent_end_listener(on_output)
+
+    async def _start_session(
+        self,
+        chat_id: int,
+        *,
+        resume: str | None,
+    ) -> PrimeRpcSession:
+        session = PrimeRpcSession(self.config, resume_session=resume, chat_id=chat_id)
+        self._attach_output_handler(chat_id, session)
+        await session.start()
+        return session
 
     async def get(self, chat_id: int) -> PrimeRpcSession:
         existing = self.sessions.get(chat_id)
         if existing:
             return existing
-        record = self.store.get(chat_id)
-        resume = record.session_file if record and record.session_file else None
-        session = PrimeRpcSession(self.config, resume_session=resume, chat_id=chat_id)
-        await session.start()
-        self.sessions[chat_id] = session
-        if not record:
-            await session.set_session_name(f"telegram-{chat_id}")
-        await self.persist(chat_id, session)
-        return session
+
+        # Separate initialization lock avoids deadlocking callers that already
+        # hold the per-chat operation lock while still preventing two first
+        # messages from creating competing Prime sessions.
+        async with self._init_lock_for(chat_id):
+            existing = self.sessions.get(chat_id)
+            if existing:
+                return existing
+
+            record = self.store.get(chat_id)
+            resume = record.session_file if record else None
+            recovered = False
+
+            # State stores Prime's concrete sessionFile path. If it no longer
+            # exists, recovery is unambiguous: there is nothing left to resume.
+            # Other startup failures (auth, provider outage, incompatible Prime)
+            # are propagated instead of destroying a valid mapping.
+            if resume and not Path(resume).exists():
+                logger.warning(
+                    "Stored Prime session file for Telegram chat %s is missing; starting a fresh session",
+                    chat_id,
+                )
+                resume = None
+                record = None
+                recovered = True
+
+            session = await self._start_session(chat_id, resume=resume)
+            self.sessions[chat_id] = session
+            if not record or recovered:
+                await session.set_session_name(f"telegram-{chat_id}")
+            await self.persist(chat_id, session)
+            return session
 
     async def persist(self, chat_id: int, session: PrimeRpcSession) -> None:
         state = await session.get_state()
         session_file = state.get("sessionFile")
         if not session_file:
             raise PrimeRpcError("Prime RPC state did not expose sessionFile; cannot persist Telegram mapping")
+        session.resume_session = str(session_file)
         self.store.set(
             ChatSessionRecord(
                 chat_id=chat_id,
@@ -61,12 +114,38 @@ class PrimeSessionManager:
             )
         )
 
-    async def new(self, chat_id: int) -> dict[str, Any]:
-        session = await self.get(chat_id)
-        state = await session.new_session()
+    async def new(self, chat_id: int) -> tuple[bool, dict[str, Any]]:
+        session: PrimeRpcSession | None = None
+        try:
+            session = await self.get(chat_id)
+            cancelled, state = await session.new_session()
+        except Exception:
+            # /new is an explicit request to abandon the old conversation. If
+            # a mapped session is corrupt/unresumable, prove that a fresh Prime
+            # session can start before replacing the persisted map.
+            if self.store.get(chat_id) is None:
+                raise
+            logger.warning(
+                "Existing Prime session for Telegram chat %s cannot be opened; "
+                "/new will recover with a fresh session",
+                chat_id,
+                exc_info=True,
+            )
+            fresh = await self._start_session(chat_id, resume=None)
+            old = self.sessions.get(chat_id)
+            self.sessions[chat_id] = fresh
+            await fresh.set_session_name(f"telegram-{chat_id}")
+            await self.persist(chat_id, fresh)
+            if old is not None and old is not fresh:
+                await old.close()
+            return False, await fresh.get_state()
+
+        if cancelled:
+            await self.persist(chat_id, session)
+            return True, state
         await session.set_session_name(f"telegram-{chat_id}")
         await self.persist(chat_id, session)
-        return state
+        return False, state
 
     async def close(self) -> None:
         await asyncio.gather(*(session.close() for session in self.sessions.values()), return_exceptions=True)
@@ -77,7 +156,7 @@ class TelegramPrimeBridge:
     def __init__(self, config: BridgeConfig):
         self.config = config
         self.telegram = TelegramClient(config.telegram_bot_token)
-        self.prime = PrimeSessionManager(config)
+        self.prime = PrimeSessionManager(config, output_handler=self._on_prime_output)
         self._stopping = asyncio.Event()
         self._update_tasks: set[asyncio.Task[Any]] = set()
 
@@ -88,34 +167,96 @@ class TelegramPrimeBridge:
             return False
         return True
 
+    async def _on_prime_output(self, chat_id: int, outcome: PrimeAgentOutcome) -> None:
+        """Forward Prime runs that were not synchronously awaited by a Telegram prompt.
+
+        This is essential for RLM child -> parent messages, scheduled/follow-up
+        work, and other daemon-owned continuations that start a later parent run.
+        """
+        if outcome.error:
+            await self.telegram.send_message(chat_id, f"Prime Agent error: {outcome.error}")
+        elif outcome.text:
+            await self.telegram.send_message(chat_id, outcome.text)
+
+    @staticmethod
+    def _poll_offset(
+        in_flight: dict[int, asyncio.Task[Any]],
+        max_seen: int | None,
+    ) -> int | None:
+        if in_flight:
+            return min(in_flight)
+        return max_seen + 1 if max_seen is not None else None
+
     async def run(self) -> None:
-        self.config.state_dir.mkdir(parents=True, exist_ok=True)
-        self.config.prime_session_dir.mkdir(parents=True, exist_ok=True)
+        secure_directory(self.config.state_dir)
+        secure_directory(self.config.prime_session_dir)
         if not self.config.prime_workdir.exists():
             raise FileNotFoundError(f"PRIME_WORKDIR does not exist: {self.config.prime_workdir}")
         if self.config.bootstrap_only:
             logger.warning(
-                "No TELEGRAM_ALLOWED_USER_IDS configured. Bootstrap-only mode: /id works, agent access is denied."
+                "No TELEGRAM_ALLOWED_USER_IDS configured. Bootstrap-only mode: "
+                "/id works, agent access is denied."
             )
-        offset: int | None = None
+
+        in_flight: dict[int, asyncio.Task[Any]] = {}
+        handled_unacked: set[int] = set()
+        max_seen: int | None = None
+
+        def mark_done(update_id: int, task: asyncio.Task[Any]) -> None:
+            in_flight.pop(update_id, None)
+            handled_unacked.add(update_id)
+            self._update_tasks.discard(task)
+            if task.cancelled():
+                return
+            try:
+                task.result()
+            except Exception:
+                logger.exception("Telegram update task %s failed outside handler recovery", update_id)
+
         try:
             while not self._stopping.is_set():
+                offset = self._poll_offset(in_flight, max_seen)
+                if offset is not None:
+                    handled_unacked = {update_id for update_id in handled_unacked if update_id >= offset}
+
                 try:
-                    updates = await self.telegram.get_updates(offset=offset, timeout=self.config.telegram_poll_timeout)
+                    updates = await self.telegram.get_updates(
+                        offset=offset,
+                        timeout=self.config.telegram_poll_timeout,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     logger.exception("Telegram polling failed; retrying")
                     await asyncio.sleep(2)
                     continue
+
+                scheduled_new = False
                 for update in updates:
-                    offset = max(offset or 0, int(update.get("update_id", 0)) + 1)
+                    try:
+                        update_id = int(update.get("update_id", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    max_seen = update_id if max_seen is None else max(max_seen, update_id)
+                    if update_id in in_flight or update_id in handled_unacked:
+                        continue
+
                     msg = parse_update(update)
                     if not msg:
+                        handled_unacked.add(update_id)
                         continue
+
                     task = asyncio.create_task(self.handle_message(msg), name=f"telegram-{msg.update_id}")
+                    in_flight[update_id] = task
                     self._update_tasks.add(task)
-                    task.add_done_callback(self._update_tasks.discard)
+                    task.add_done_callback(lambda done, uid=update_id: mark_done(uid, done))
+                    scheduled_new = True
+
+                # While a long Prime turn is running Telegram will return its
+                # unacknowledged update immediately. Avoid a hot poll loop but
+                # keep polling often enough to receive /stop or /steer updates.
+                if not scheduled_new and in_flight:
+                    await asyncio.wait(in_flight.values(), timeout=0.5, return_when=asyncio.FIRST_COMPLETED)
         finally:
             await self.close()
 
@@ -143,7 +284,8 @@ class TelegramPrimeBridge:
         if not self.authorized(msg):
             await self.telegram.send_message(
                 msg.chat_id,
-                "Access denied. Send /id, add your user_id to TELEGRAM_ALLOWED_USER_IDS, then restart the bridge.",
+                "Access denied. Send /id, add your user_id to TELEGRAM_ALLOWED_USER_IDS, "
+                "then restart the bridge.",
                 reply_to_message_id=msg.message_id,
             )
             return
@@ -157,7 +299,7 @@ class TelegramPrimeBridge:
                 state = await session.get_state()
                 model = state.get("model") or {}
                 text = (
-                    f"Prime Agent\n"
+                    "Prime Agent\n"
                     f"session={state.get('sessionId', 'unknown')}\n"
                     f"model={model.get('provider', '?')}/{model.get('id', '?')}\n"
                     f"thinking={state.get('thinkingLevel', '?')}\n"
@@ -167,8 +309,9 @@ class TelegramPrimeBridge:
                 return
             if command == "/new":
                 async with self.prime.lock_for(msg.chat_id):
-                    await self.prime.new(msg.chat_id)
-                await self.telegram.send_message(msg.chat_id, "Started a new Prime session.")
+                    cancelled, _state = await self.prime.new(msg.chat_id)
+                text = "Prime cancelled the session switch." if cancelled else "Started a new Prime session."
+                await self.telegram.send_message(msg.chat_id, text)
                 return
             if command == "/stop":
                 session = await self.prime.get(msg.chat_id)
@@ -192,16 +335,18 @@ class TelegramPrimeBridge:
                 await self.telegram.send_message(msg.chat_id, "Follow-up queued.")
                 return
             if command == "/compact":
-                session = await self.prime.get(msg.chat_id)
-                result = await session.compact(arg.strip() or None)
-                await self.prime.persist(msg.chat_id, session)
+                async with self.prime.lock_for(msg.chat_id):
+                    session = await self.prime.get(msg.chat_id)
+                    result = await session.compact(arg.strip() or None)
+                    await self.prime.persist(msg.chat_id, session)
                 summary = result.get("summary") if isinstance(result, dict) else None
                 await self.telegram.send_message(msg.chat_id, summary or "Context compacted.")
                 return
             if command == "/refine":
-                session = await self.prime.get(msg.chat_id)
-                result = await session.refine(arg.strip() or None)
-                await self.prime.persist(msg.chat_id, session)
+                async with self.prime.lock_for(msg.chat_id):
+                    session = await self.prime.get(msg.chat_id)
+                    result = await session.refine(arg.strip() or None)
+                    await self.prime.persist(msg.chat_id, session)
                 rendered = json.dumps(result, ensure_ascii=False, indent=2, default=str)
                 await self.telegram.send_message(msg.chat_id, f"Refinement complete.\n{rendered[:12000]}")
                 return
@@ -216,7 +361,9 @@ class TelegramPrimeBridge:
             stop_typing = asyncio.Event()
             typing_task = asyncio.create_task(self.telegram.typing_loop(msg.chat_id, stop_typing))
             try:
-                # Lock per chat to keep session lifecycle/persistence atomic. Prime itself still handles recursive subagents.
+                # Lifecycle-changing request/response work is serialized per
+                # chat. /stop, /steer and /followup intentionally bypass this
+                # lock so they remain usable while a run is active.
                 async with self.prime.lock_for(msg.chat_id):
                     session = await self.prime.get(msg.chat_id)
                     answer = await session.ask(prompt, images=images or None)
@@ -225,11 +372,11 @@ class TelegramPrimeBridge:
                 stop_typing.set()
                 await asyncio.gather(typing_task, return_exceptions=True)
             await self.telegram.send_message(msg.chat_id, answer, reply_to_message_id=msg.message_id)
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed handling Telegram message %s", msg.message_id)
             await self.telegram.send_message(
                 msg.chat_id,
-                f"Bridge error: {type(exc).__name__}. Check bridge logs for details.",
+                "Bridge error. Check bridge logs for details.",
                 reply_to_message_id=msg.message_id,
             )
 
@@ -252,15 +399,14 @@ class TelegramPrimeBridge:
     async def _prepare_attachments(self, msg: IncomingMessage) -> tuple[list[dict[str, str]], str]:
         images: list[dict[str, str]] = []
         notes: list[str] = []
+        max_bytes = self.config.telegram_max_attachment_bytes
 
         if msg.photo_file_id:
             info = await self.telegram.get_file(msg.photo_file_id)
             file_path = info.get("file_path")
             if file_path:
-                raw = await self.telegram.download_file(file_path)
-                if len(raw) > self.config.telegram_max_attachment_bytes:
-                    raise ValueError("Telegram photo exceeds TELEGRAM_MAX_ATTACHMENT_BYTES")
-                mime = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+                raw = await self.telegram.download_file(str(file_path), max_bytes=max_bytes)
+                mime = mimetypes.guess_type(str(file_path))[0] or "image/jpeg"
                 images.append(
                     {
                         "type": "image",
@@ -271,22 +417,24 @@ class TelegramPrimeBridge:
 
         if msg.document:
             declared_size = int(msg.document.get("file_size") or 0)
-            if declared_size > self.config.telegram_max_attachment_bytes:
+            if declared_size > max_bytes:
                 raise ValueError("Telegram document exceeds TELEGRAM_MAX_ATTACHMENT_BYTES")
             file_id = msg.document.get("file_id")
             if file_id:
-                info = await self.telegram.get_file(file_id)
+                info = await self.telegram.get_file(str(file_id))
                 remote_path = info.get("file_path")
                 if remote_path:
-                    raw = await self.telegram.download_file(remote_path)
-                    if len(raw) > self.config.telegram_max_attachment_bytes:
-                        raise ValueError("Telegram document exceeds TELEGRAM_MAX_ATTACHMENT_BYTES")
-                    original = msg.document.get("file_name") or Path(remote_path).name
+                    raw = await self.telegram.download_file(str(remote_path), max_bytes=max_bytes)
+                    original = msg.document.get("file_name") or Path(str(remote_path)).name
                     filename = _safe_filename(str(original))
                     inbox = self.config.state_dir / "inbox" / str(msg.chat_id)
-                    inbox.mkdir(parents=True, exist_ok=True)
+                    secure_directory(inbox)
                     target = inbox / f"{msg.message_id}-{filename}"
                     target.write_bytes(raw)
+                    try:
+                        target.chmod(0o600)
+                    except OSError:
+                        pass
                     notes.append(
                         "Telegram document saved locally for this task at: "
                         f"{target}. Inspect it with the available local tools if relevant."

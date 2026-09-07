@@ -8,6 +8,17 @@ session_file = str(Path.cwd() / "fake-session.jsonl")
 last_text = None
 session_id = "fake-session"
 name = None
+session_counter = 0
+
+
+def assistant(text: str, *, error: str | None = None) -> dict:
+    return {
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}] if text else [],
+        "stopReason": "error" if error else "stop",
+        "errorMessage": error,
+    }
+
 
 for raw in sys.stdin:
     cmd = json.loads(raw)
@@ -22,7 +33,8 @@ for raw in sys.stdin:
             "sessionId": session_id,
             "sessionName": name,
         }
-        print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True, "data": data}), flush=True)
+        response = {"id": req_id, "type": "response", "command": typ, "success": True, "data": data}
+        print(json.dumps(response), flush=True)
     elif typ == "set_session_name":
         name = cmd.get("name")
         print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True}), flush=True)
@@ -32,12 +44,22 @@ for raw in sys.stdin:
         last_text = f"echo:{cmd.get('message')}"
         print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True}), flush=True)
         print(json.dumps({"type": "agent_start"}), flush=True)
-        print(json.dumps({"type": "agent_end"}), flush=True)
+        print(json.dumps({"type": "agent_end", "messages": [assistant(last_text)]}), flush=True)
     elif typ == "get_last_assistant_text":
-        print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True, "data": {"text": last_text}}), flush=True)
+        response = {
+            "id": req_id, "type": "response", "command": typ, "success": True, "data": {"text": last_text}
+        }
+        print(json.dumps(response), flush=True)
     elif typ == "abort":
         print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True}), flush=True)
     elif typ == "new_session":
-        print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True, "data": {"cancelled": False}}), flush=True)
+        session_counter += 1
+        session_id = f"fake-session-{session_counter}"
+        session_file = str(Path.cwd() / f"fake-session-{session_counter}.jsonl")
+        response = {
+            "id": req_id, "type": "response", "command": typ, "success": True, "data": {"cancelled": False}
+        }
+        print(json.dumps(response), flush=True)
     else:
-        print(json.dumps({"id": req_id, "type": "response", "command": typ, "success": True, "data": {}}), flush=True)
+        response = {"id": req_id, "type": "response", "command": typ, "success": True, "data": {}}
+        print(json.dumps(response), flush=True)
