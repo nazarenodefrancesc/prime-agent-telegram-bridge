@@ -2,7 +2,7 @@
 
 This repository exists to let you **query Prime Agent from Telegram first**: send a message to a Telegram bot and receive Prime's response without needing to open the local Prime interface. The bridge keeps Telegram as a thin, authorized transport while Prime remains the agent runtime.
 
-A minimal, security-first Telegram transport for **Prime Agent**. It does not fork or reimplement Prime: every authorized Telegram chat is mapped to a normal Prime Agent session started through Prime's documented JSONL RPC mode.
+A minimal, security-first Telegram transport for **[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)**. It does not fork or reimplement Prime: every authorized Telegram chat is mapped to a normal Prime Agent session started through Prime's documented JSONL RPC mode.
 
 ## TL;DR
 
@@ -28,7 +28,7 @@ The Prime subprocess environment deliberately drops `TELEGRAM_*` and `BRIDGE_*` 
 
 ## Quick start
 
-1. Install and verify Prime Agent separately:
+1. Install and verify [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) separately:
 
 ```bash
 prime-agent
