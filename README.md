@@ -1,4 +1,4 @@
-# Prime Telegram Bridge
+# Prime Agent - Telegram Bridge
 
 This repository exists to let you **query Prime Agent from Telegram first**: send a message to a Telegram bot and receive Prime's response without needing to open the local Prime interface. The bridge keeps Telegram as a thin, authorized transport while Prime remains the agent runtime.
 
