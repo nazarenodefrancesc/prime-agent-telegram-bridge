@@ -1,0 +1,3 @@
+{"type":"message","id":"u1","message":{"role":"user","content":"leggi il file"}}
+{"type":"message","id":"t1","message":{"role":"tool","content":"private tool output"}}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"fatto"},{"type":"thinking","text":"private reasoning"}]}}

@@ -67,6 +67,11 @@ class BridgeConfig:
     prime_thinking: str | None
     state_dir: Path
     log_level: str
+    transcript_recovery_enabled: bool = True
+    transcript_recovery_max_file_bytes: int = 16 * 1024 * 1024
+    transcript_recovery_max_line_bytes: int = 1024 * 1024
+    transcript_recovery_max_turns: int = 20
+    transcript_recovery_max_chars: int = 40_000
 
     @property
     def bootstrap_only(self) -> bool:
@@ -123,4 +128,23 @@ def load_config(env: Mapping[str, str] | None = None) -> BridgeConfig:
         prime_thinking=_parse_thinking(env.get("PRIME_THINKING")),
         state_dir=state_dir,
         log_level=(env.get("LOG_LEVEL") or "INFO").upper(),
+        transcript_recovery_enabled=(
+            env.get("TRANSCRIPT_RECOVERY_ENABLED", "true").lower() not in {"0", "false", "no"}
+        ),
+        transcript_recovery_max_file_bytes=_parse_int(
+            env.get("TRANSCRIPT_RECOVERY_MAX_FILE_BYTES"), 16 * 1024 * 1024,
+            "TRANSCRIPT_RECOVERY_MAX_FILE_BYTES", 1,
+        ),
+        transcript_recovery_max_line_bytes=_parse_int(
+            env.get("TRANSCRIPT_RECOVERY_MAX_LINE_BYTES"), 1024 * 1024,
+            "TRANSCRIPT_RECOVERY_MAX_LINE_BYTES", 1,
+        ),
+        transcript_recovery_max_turns=_parse_int(
+            env.get("TRANSCRIPT_RECOVERY_MAX_TURNS"), 20,
+            "TRANSCRIPT_RECOVERY_MAX_TURNS", 1,
+        ),
+        transcript_recovery_max_chars=_parse_int(
+            env.get("TRANSCRIPT_RECOVERY_MAX_CHARS"), 40_000,
+            "TRANSCRIPT_RECOVERY_MAX_CHARS", 1,
+        ),
     )

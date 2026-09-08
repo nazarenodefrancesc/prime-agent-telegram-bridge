@@ -1,0 +1,2 @@
+{"future":true,"payload":{"message":{"role":"user","content":[{"type":"text","value":"futuro"}]}}}
+{"payload":{"message":{"role":"assistant","content":"compatibile"}}}

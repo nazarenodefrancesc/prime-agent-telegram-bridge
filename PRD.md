@@ -26,6 +26,7 @@ Deliver a small, secure Telegram adapter that maps each authorized Telegram chat
 | T009 | COMPLETE | v0.1.2 log-secret & attachment-retention hardening | `prd/T009-security-retention-v012.md` | `progress/PROGRESS-T009.md` |
 | T010 | COMPLETE | v0.1.3 large-RPC framing & failed-worker recovery | `prd/T010-rpc-framing-recovery-v013.md` | `progress/PROGRESS-T010.md` |
 | T011 | IN_PROGRESS | v0.1.4 session lifecycle recovery | `prd/T011-session-lifecycle-recovery-v014.md` | `progress/PROGRESS-T011.md` |
+| T012 | IN_PROGRESS | transcript recovery fallback | `prd/T012-transcript-recovery.md` | `progress/PROGRESS-T012.md` |
 
 ## Release acceptance
 

@@ -30,6 +30,10 @@ class ChatSessionRecord:
     session_file: str
     session_id: str | None = None
     session_name: str | None = None
+    recovery_mode: str | None = None
+    recovered_from_session_file: str | None = None
+    recovery_capsule_hash: str | None = None
+    recovery_timestamp: str | None = None
 
 
 class StateStore:
@@ -61,6 +65,10 @@ class StateStore:
             session_file=session_file,
             session_id=raw.get("session_id"),
             session_name=raw.get("session_name"),
+            recovery_mode=raw.get("recovery_mode"),
+            recovered_from_session_file=raw.get("recovered_from_session_file"),
+            recovery_capsule_hash=raw.get("recovery_capsule_hash"),
+            recovery_timestamp=raw.get("recovery_timestamp"),
         )
 
     def set(self, record: ChatSessionRecord) -> None:

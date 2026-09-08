@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
 import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from .prime_rpc import (
 )
 from .state import ChatSessionRecord, StateStore, cleanup_attachment_inbox, secure_directory
 from .telegram_api import IncomingMessage, TelegramClient, parse_update
+from .transcript_recovery import build_recovery_capsule, parse_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,7 @@ class PrimeSessionManager:
         self._init_locks: dict[int, asyncio.Lock] = {}
         self._output_handler = output_handler
         self._recovery_handler = recovery_handler
+        self._suppress_output_for: set[int] = set()
 
     def lock_for(self, chat_id: int) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())
@@ -68,6 +72,8 @@ class PrimeSessionManager:
 
         async def on_output(outcome: PrimeAgentOutcome) -> None:
             assert self._output_handler is not None
+            if chat_id in self._suppress_output_for:
+                return
             await self._output_handler(chat_id, outcome)
 
         session.add_agent_end_listener(on_output)
@@ -163,10 +169,46 @@ class PrimeSessionManager:
         self.sessions[chat_id] = fresh
         if old is not None and old is not fresh:
             await old.close()
+        recovered_history = False
+        if self.config.transcript_recovery_enabled and session_file and Path(session_file).is_file():
+            try:
+                parsed = parse_transcript(
+                    Path(session_file),
+                    max_file_bytes=self.config.transcript_recovery_max_file_bytes,
+                    max_line_bytes=self.config.transcript_recovery_max_line_bytes,
+                )
+                if parsed.confidence in {"high", "medium"} and parsed.turns:
+                    capsule = build_recovery_capsule(
+                        parsed,
+                        max_turns=self.config.transcript_recovery_max_turns,
+                        max_chars=self.config.transcript_recovery_max_chars,
+                    )
+                    self._suppress_output_for.add(chat_id)
+                    try:
+                        await fresh.ask(capsule, timeout=600)
+                    finally:
+                        self._suppress_output_for.discard(chat_id)
+                    current = self.store.get(chat_id)
+                    if current is not None:
+                        current.recovery_mode = "transcript"
+                        current.recovered_from_session_file = str(session_file)
+                        current.recovery_capsule_hash = hashlib.sha256(
+                            capsule.encode("utf-8")
+                        ).hexdigest()
+                        current.recovery_timestamp = datetime.now(UTC).isoformat()
+                        self.store.set(current)
+                    recovered_history = True
+            except Exception:
+                logger.warning("Transcript recovery failed for Telegram chat %s", chat_id, exc_info=True)
         await self._notify_recovery(
             chat_id,
-            "The previous Prime worker could not be safely reclaimed, so the bridge started "
-            "a fresh Prime session. The old session file was left untouched.",
+            (
+                "The previous Prime runtime could not be restored, but its conversation history "
+                "was recovered into a new session. Runtime-only state was not recovered."
+                if recovered_history
+                else "The previous Prime worker could not be safely reclaimed, so the bridge started "
+                "a fresh Prime session. The old session file was left untouched."
+            ),
         )
         return fresh
 

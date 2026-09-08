@@ -4,7 +4,7 @@
 
 v0.1.1 targets the documented Prime Agent v0.7.x JSONL RPC surface and also checks the upstream v0.7.0 event/types contract. Prime-specific behavior is isolated in `src/prime_telegram_bridge/prime_rpc.py`.
 
-Prime Agent's changelog records that interactive, print, JSON and RPC clients have used the same daemon-owned runtime since v0.3.2. This bridge uses only the public RPC/session contract and makes no dependency on Prime's private daemon wire protocol.
+Prime Agent's changelog records that interactive, print, JSON and RPC clients have used the same daemon-owned runtime since v0.3.2. This bridge uses only the public RPC/session contract and makes no dependency on Prime's private daemon wire protocol. For Prime 0.9.3, RPC is client-owned in the installed lifecycle; transcript recovery is therefore a conversational fallback, not runtime reattachment.
 
 ## Required Prime capabilities
 
@@ -38,6 +38,7 @@ This is safer than blindly calling `get_last_assistant_text` after every event, 
 - Prime internal TypeScript module paths.
 - Prime's private daemon socket/protocol.
 - Guaranteed live IPython-kernel survival across every bridge/client restart.
+- Full compatibility with arbitrary future Prime transcript formats. The parser is content-detected and designed for forward tolerance with safe degradation.
 
 ## Upgrade procedure
 
@@ -58,4 +59,13 @@ If one stdout JSONL frame exceeds the configured bound, the bridge treats the RP
 
 ## Failed resident-worker recovery
 
-Prime may refuse a saved-session resume with `failed worker that could not be safely reclaimed`. v0.1.3 treats that exact lifecycle state differently from ordinary resume failures: it proves a fresh session can start and persist before replacing the Telegram mapping, leaves the previous session file on disk, and reports the recovery to the chat. Other startup/resume failures remain non-destructive.
+Prime may refuse a saved-session resume with `failed worker that could not be safely reclaimed`. v0.1.3 treats that exact lifecycle state differently from ordinary resume failures: it proves a fresh session can start and persist before replacing the Telegram mapping, leaves the previous session file on disk, and reports the recovery to the chat. Other startup/resume failures remain non-destructive. T012 adds transcript recovery after this native path fails.
+
+## Transcript recovery fallback
+
+The bridge can extract bounded conversational turns from a failed session's
+JSONL transcript and inject them once into a new session. Known Prime message
+records are preferred, with a conservative semantic role/content fallback.
+Unknown records, tool output, reasoning, and malformed records are ignored.
+This preserves conversation context only; it does not restore the original
+session identity, worker, IPython variables, or running jobs.

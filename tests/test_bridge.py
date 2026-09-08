@@ -39,6 +39,7 @@ class FakeSession:
         self.session_file = session_file
         self.names: list[str] = []
         self.cancel_new = False
+        self.prompts: list[str] = []
 
     async def set_session_name(self, name: str) -> None:
         self.names.append(name)
@@ -57,6 +58,10 @@ class FakeSession:
 
     async def close(self) -> None:
         return None
+
+    async def ask(self, message: str, **_kwargs: Any) -> str:
+        self.prompts.append(message)
+        return "recovered"
 
 
 @pytest.mark.asyncio
@@ -202,6 +207,46 @@ async def test_failed_worker_retries_same_session_before_creating_new_one(tmp_pa
     assert result is recovered
     assert retry_calls == [str(saved)]
     assert attempts == [str(saved), str(saved)]
+
+
+@pytest.mark.asyncio
+async def test_failed_worker_recovers_safe_transcript_into_fresh_session(tmp_path: Path):
+    notices: list[str] = []
+
+    async def recovery_handler(_chat_id: int, message: str) -> None:
+        notices.append(message)
+
+    manager = PrimeSessionManager(make_config(tmp_path), recovery_handler=recovery_handler)
+    saved = tmp_path / "old.jsonl"
+    saved.write_text(
+        '{"type":"message","id":"u1","message":{"role":"user","content":"ippopotamo"}}\n'
+        '{"type":"message","id":"a1","message":{"role":"assistant","content":"ricevuto"}}\n',
+        encoding="utf-8",
+    )
+    manager.store.set(ChatSessionRecord(chat_id=99, session_file=str(saved)))
+    fresh = FakeSession(str(tmp_path / "fresh.jsonl"))
+    attempts: list[str | None] = []
+
+    async def start_session(_chat_id: int, *, resume: str | None):
+        attempts.append(resume)
+        if resume is not None:
+            raise PrimeRpcError("failed worker that could not be safely reclaimed")
+        return fresh
+
+    manager._start_session = start_session  # type: ignore[method-assign]
+    manager._retry_failed_worker = lambda _selector: _false_async()  # type: ignore[method-assign]
+    result = await manager.get(99)
+
+    assert result is fresh
+    assert attempts == [str(saved), None]
+    assert len(fresh.prompts) == 1
+    assert "USER:\nippopotamo" in fresh.prompts[0]
+    assert "historical conversation context" in fresh.prompts[0]
+    assert any("conversation history" in message for message in notices)
+
+
+async def _false_async() -> bool:
+    return False
 
 
 @pytest.mark.asyncio
