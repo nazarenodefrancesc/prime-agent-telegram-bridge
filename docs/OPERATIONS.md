@@ -58,7 +58,7 @@ journalctl --user -u prime-telegram-bridge -f
 
 **Prime reports `failed worker that could not be safely reclaimed`** — v0.1.4 first invokes Prime's daemon-supervisor retry for the persisted session selector and retries the same session file. Only if both attempts fail does the bridge start and persist a fresh session, leave the old session file untouched, and notify Telegram. Generic provider/auth/incompatible-session errors still preserve the old mapping. `/new` remains the explicit recovery command for all other cases.
 
-**Bridge restart loses a resident worker** — normal shutdown now closes RPC stdin and waits for Prime to detach before escalating to signals. This preserves the existing worker when Prime supports graceful detach. Volatile IPython state is still not guaranteed after a terminal worker failure.
+**Bridge restart loses a resident worker** — v0.1.4 closes RPC stdin gracefully, but Prime 0.9.3's RPC path is client-owned and may complete the worker on normal shutdown. The daemon-owned transport follow-up is tracked in T011; volatile IPython state must not yet be relied upon across bridge restarts.
 
 **Staged Telegram documents are accumulating** — v0.1.2 cleans `BRIDGE_STATE_DIR/inbox` at startup and hourly, deleting files older than `TELEGRAM_ATTACHMENT_RETENTION_HOURS` and empty chat directories. Symlinks are never followed.
 

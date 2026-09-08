@@ -1,24 +1,22 @@
-# T011 — Session lifecycle recovery (v0.1.4)
+# T011 — Session lifecycle recovery (follow-up to v0.1.4)
 
 ## Objective
 
-Preserve the existing Prime session across an ordinary bridge restart whenever
-Prime can detach or recover its resident worker. Do not silently discard the
+Preserve the existing Prime session across an ordinary bridge restart by using
+a daemon-owned/resident Prime transport. Do not silently discard the
 Telegram-to-Prime mapping merely because the first resume attempt reports a
 failed worker.
 
 ## Acceptance criteria
 
-- `PrimeRpcSession.close()` closes RPC stdin (EOF) and waits up to a bounded
-  grace period before using SIGTERM/SIGKILL.
-- An exact `failed worker that could not be safely reclaimed` resume failure
-  invokes `prime-agent daemon retry <session-id>` (or the persisted selector)
-  before any fresh session is created.
-- After a successful daemon retry, the bridge resumes the same session file.
-- A fresh session is created only when retry or same-session resume fails; the
-  old session file remains untouched until the replacement is persisted.
+- The transport does not complete a client-owned session during normal bridge
+  shutdown.
+- The bridge attaches to a daemon-owned/resident session through a supported
+  Prime interface.
+- An exact failed-worker state is retried before any fresh session is created.
+- A fresh session is created only when retry or same-session reattach fails.
 - Generic Prime resume errors remain fail-closed and do not trigger recovery.
-- Tests cover graceful EOF, same-session retry, and the existing fallback path.
+- Tests cover ownership, detach/reattach, same-session retry, and fallback.
 - Existing offline, static, and real-Prime smoke gates remain green.
 
 ## Non-goals
@@ -28,3 +26,11 @@ failed worker.
   failure.
 - Changing `/new`, which remains the explicit user-requested fresh-session
   operation.
+
+## Current blocker
+
+Prime Agent 0.9.3 selects `client-owned` for `--mode rpc`. Its internal daemon
+protocol contains `promote_owned_session`, but the installed CLI does not expose
+that operation. The next implementation must either use Prime's public ACP
+transport or another documented daemon-owned entry point; it must not speak the
+private daemon socket protocol merely to force promotion.
