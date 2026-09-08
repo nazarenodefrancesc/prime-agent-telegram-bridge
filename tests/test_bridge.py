@@ -173,6 +173,38 @@ async def test_failed_worker_resume_is_replaced_with_fresh_session(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_failed_worker_retries_same_session_before_creating_new_one(tmp_path: Path):
+    manager = PrimeSessionManager(make_config(tmp_path))
+    saved = tmp_path / "old.jsonl"
+    saved.write_text("history", encoding="utf-8")
+    manager.store.set(ChatSessionRecord(chat_id=99, session_file=str(saved)))
+    recovered = FakeSession(str(saved))
+    attempts: list[str | None] = []
+    retry_calls: list[str] = []
+
+    async def retry_worker(session_file: str) -> bool:
+        retry_calls.append(session_file)
+        return True
+
+    manager._retry_failed_worker = retry_worker  # type: ignore[attr-defined]
+
+    async def start_session(_chat_id: int, *, resume: str | None):
+        attempts.append(resume)
+        if len(attempts) == 1:
+            raise PrimeRpcError(
+                f'Session "{saved}" is registered to a failed worker that could not be safely reclaimed'
+            )
+        assert resume == str(saved)
+        return recovered
+
+    manager._start_session = start_session  # type: ignore[method-assign]
+    result = await manager.get(99)
+    assert result is recovered
+    assert retry_calls == [str(saved)]
+    assert attempts == [str(saved), str(saved)]
+
+
+@pytest.mark.asyncio
 async def test_dead_in_memory_session_recovers_only_for_exact_failed_worker_state(tmp_path: Path):
     manager = PrimeSessionManager(make_config(tmp_path))
     saved = tmp_path / "old.jsonl"

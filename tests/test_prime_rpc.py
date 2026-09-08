@@ -167,6 +167,33 @@ for raw in sys.stdin:
 
 
 @pytest.mark.asyncio
+async def test_close_sends_eof_before_force_terminating_rpc_client(tmp_path: Path):
+    marker = tmp_path / "eof.marker"
+    script = tmp_path / "graceful_rpc.py"
+    script.write_text(
+        f"""
+import json, sys
+from pathlib import Path
+marker = Path({str(marker)!r})
+for raw in sys.stdin:
+    cmd = json.loads(raw)
+    if cmd.get('type') == 'get_state':
+        print(json.dumps({{'id': cmd['id'], 'type': 'response', 'command': 'get_state',
+            'success': True, 'data': {{'sessionFile': str(Path.cwd()/'s.jsonl'),
+            'sessionId': 's'}}}}), flush=True)
+marker.write_text('eof', encoding='utf-8')
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = make_wrapper(tmp_path, script, "graceful-prime")
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
+    await session.start()
+    await session.close()
+    assert marker.read_text(encoding="utf-8") == "eof"
+
+
+@pytest.mark.asyncio
 async def test_later_autonomous_agent_end_is_delivered_once(tmp_path: Path):
     script = tmp_path / "autonomous_rpc.py"
     script.write_text(

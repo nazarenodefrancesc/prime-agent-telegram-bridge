@@ -15,6 +15,8 @@ from .state import secure_directory
 
 logger = logging.getLogger(__name__)
 
+RPC_SHUTDOWN_GRACE_SECONDS = 30
+
 
 class PrimeRpcError(RuntimeError):
     pass
@@ -219,11 +221,25 @@ class PrimeRpcSession:
             self.process = None
         await self._terminate_process(process)
 
+    async def _gracefully_close_process(self, process: asyncio.subprocess.Process) -> None:
+        """Close RPC stdin first so Prime can detach and persist its session."""
+        if process.returncode is None and process.stdin is not None:
+            try:
+                process.stdin.close()
+                await process.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionError):
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=RPC_SHUTDOWN_GRACE_SECONDS)
+        except TimeoutError:
+            await self._terminate_process(process)
+
     async def close(self) -> None:
         process = self.process
-        self.process = None
         if process:
-            await self._close_process(process)
+            await self._gracefully_close_process(process)
+            if self.process is process:
+                self.process = None
 
         tasks = [task for task in (self._stdout_task, self._stderr_task) if task]
         for task in tasks:

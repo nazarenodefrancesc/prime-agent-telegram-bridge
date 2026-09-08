@@ -1,8 +1,8 @@
-# PRD — Prime Agent - Telegram Bridge v0.1.3
+# PRD — Prime Agent - Telegram Bridge v0.1.4
 
 ## TL;DR
 
-Deliver a small, secure Telegram adapter that maps each authorized Telegram chat to a persistent Prime Agent session using Prime's documented JSONL RPC mode. The bridge must not reproduce Prime internals. v0.1.1 hardened crash/restart behavior and RLM follow-up delivery; v0.1.2 closed token-bearing HTTP log leakage and bounded staged-document retention; v0.1.3 hardens large JSONL RPC framing and narrowly recovers Prime sessions bound to unreclaimable failed workers.
+Deliver a small, secure Telegram adapter that maps each authorized Telegram chat to a persistent Prime Agent session using Prime's documented JSONL RPC mode. The bridge must not reproduce Prime internals. v0.1.1 hardened crash/restart behavior and RLM follow-up delivery; v0.1.2 closed token-bearing HTTP log leakage and bounded staged-document retention; v0.1.3 hardens large JSONL RPC framing; v0.1.4 improves graceful client shutdown and retries failed resident workers before falling back to a new session.
 
 ## Product contract
 
@@ -25,6 +25,7 @@ Deliver a small, secure Telegram adapter that maps each authorized Telegram chat
 | T008 | COMPLETE | v0.1.1 reliability/security hardening | `prd/T008-hardening-v011.md` | `progress/PROGRESS-T008.md` |
 | T009 | COMPLETE | v0.1.2 log-secret & attachment-retention hardening | `prd/T009-security-retention-v012.md` | `progress/PROGRESS-T009.md` |
 | T010 | COMPLETE | v0.1.3 large-RPC framing & failed-worker recovery | `prd/T010-rpc-framing-recovery-v013.md` | `progress/PROGRESS-T010.md` |
+| T011 | COMPLETE | v0.1.4 session lifecycle recovery | `prd/T011-session-lifecycle-recovery-v014.md` | `progress/PROGRESS-T011.md` |
 
 ## Release acceptance
 
@@ -40,12 +41,13 @@ Deliver a small, secure Telegram adapter that maps each authorized Telegram chat
 - Token-bearing `httpx`/`httpcore` INFO request logs are suppressed and bridge-formatted logs redact the Telegram token.
 - Staged Telegram documents expire after a configurable retention window (24 hours by default); cleanup runs at startup and periodically without following symlinks.
 - Prime JSONL events larger than asyncio's default 64 KiB are accepted up to a configurable 16 MiB default bound; over-limit frames fail promptly and are never automatically replayed.
-- Prime's explicit unreclaimable failed-worker resume state triggers a proven fresh-session replacement while generic resume failures keep the old mapping.
+- Prime's explicit unreclaimable failed-worker state is retried through the daemon supervisor before a proven fresh-session replacement; the old mapping is preserved until replacement succeeds.
+- Bridge shutdown closes RPC stdin and gives Prime time to detach and persist before signal escalation.
 - Offline repository gate passes without requiring network or a real Prime installation.
 - Real Prime compatibility remains an explicit operator smoke gate.
 
 ## Explicit non-guarantees
 
 - No exactly-once transaction spans Telegram update acknowledgement and Prime prompt admission.
-- No guarantee that volatile IPython variables survive every bridge/client restart; that depends on the installed Prime daemon/runtime lifecycle and must be smoke-tested.
+- No guarantee that volatile IPython variables survive every bridge/client restart; the bridge now requests graceful Prime detachment and retries resident workers, but terminal worker/runtime failures still depend on the installed Prime daemon lifecycle.
 - No offline-output reconciliation yet if Prime completes work while the bridge is not attached.

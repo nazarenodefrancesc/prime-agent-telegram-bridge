@@ -24,7 +24,7 @@ prime-agent --mode rpc
 
 ## Process/session model
 
-One RPC client subprocess is created lazily per active Telegram chat. Prime's `sessionFile` path is recorded after startup and lifecycle-changing commands. The bridge can be restarted; the next message launches an RPC client with `--resume <sessionFile>`.
+One RPC client subprocess is created lazily per active Telegram chat. Prime's `sessionFile` path is recorded after startup and lifecycle-changing commands. On normal bridge shutdown, RPC stdin is closed first so Prime can detach and persist before signal fallback. The bridge can be restarted; the next message launches an RPC client with `--resume <sessionFile>`. If Prime reports an unreclaimable failed worker, the bridge asks Prime's daemon supervisor to retry the persisted session selector before attempting the same resume again.
 
 Prime Agent has used a shared daemon-owned runtime for interactive, print, JSON and RPC clients since Prime 0.3.2. The bridge deliberately depends only on the public RPC/session surface, not Prime's private daemon protocol. A client restart may reattach to a resident Prime worker, but the bridge does not make a blanket guarantee that volatile kernel state survives every failure/restart scenario.
 

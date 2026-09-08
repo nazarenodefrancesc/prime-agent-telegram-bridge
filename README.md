@@ -18,7 +18,7 @@ Prime daemon/session + IPython + RLM subagents + continual harness
 
 The bridge owns only transport, access control, attachment staging, and `chat_id -> Prime session` mapping. Prime remains responsible for model/provider auth, session history, tools, IPython, RLM, compaction, refinement and recursive agents.
 
-v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and staged-document retention. v0.1.3 raises the bounded Prime JSONL frame limit above asyncio's 64 KiB default and safely replaces only sessions that Prime explicitly reports as bound to an unreclaimable failed worker.
+v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and staged-document retention. v0.1.3 raises the bounded Prime JSONL frame limit above asyncio's 64 KiB default. v0.1.4 requests a graceful Prime detach on bridge shutdown and retries an existing failed worker through Prime's daemon supervisor before falling back to a new session.
 
 ## Security model
 
@@ -73,7 +73,7 @@ Normal text messages are forwarded to Prime. Prime RPC JSONL frames are bounded 
 
 ## Persistence and delivery semantics
 
-The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge proves a fresh session can start, replaces the Telegram mapping, leaves the old session file untouched, and notifies the chat. Other resume errors remain fail-closed and keep the existing mapping.
+The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. The bridge first closes its RPC stdin gracefully so Prime can detach and persist. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge first asks Prime's daemon supervisor to retry that worker and retries the same `sessionFile`. Only if that fails does it prove a fresh session can start, replace the Telegram mapping, leave the old session file untouched, and notify the chat. Other resume errors remain fail-closed and keep the existing mapping.
 
 Prime has used the same daemon-owned runtime for RPC as other clients since Prime Agent 0.3.2. That means an RPC client restart is **not equivalent to a guaranteed Prime worker reset**, but this bridge also does not promise that volatile IPython variables survive every bridge/client restart. Treat live kernel survival as a real-environment compatibility property and test it on your installed Prime version.
 

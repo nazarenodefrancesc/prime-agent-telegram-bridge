@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import BridgeConfig
-from .prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcFrameTooLarge, PrimeRpcSession
+from .prime_rpc import (
+    PrimeAgentOutcome,
+    PrimeRpcError,
+    PrimeRpcFrameTooLarge,
+    PrimeRpcSession,
+    _prime_subprocess_env,
+)
 from .state import ChatSessionRecord, StateStore, cleanup_attachment_inbox, secure_directory
 from .telegram_api import IncomingMessage, TelegramClient, parse_update
 
@@ -85,15 +91,70 @@ class PrimeSessionManager:
         except Exception:
             logger.exception("Failed to send Prime session recovery notice for chat %s", chat_id)
 
+    async def _retry_failed_worker(self, session_selector: str) -> bool:
+        """Ask Prime's daemon supervisor to recover the existing worker."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.config.prime_agent_bin,
+                "daemon",
+                "retry",
+                session_selector,
+                cwd=str(self.config.prime_workdir),
+                env=_prime_subprocess_env(),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning("Prime daemon retry could not start: %s", type(exc).__name__)
+            return False
+        try:
+            await asyncio.wait_for(process.wait(), timeout=30)
+        except TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+            return False
+        return process.returncode == 0
+
     async def _recover_failed_worker(
         self,
         chat_id: int,
         *,
         old: PrimeRpcSession | None,
     ) -> PrimeRpcSession:
+        record = self.store.get(chat_id)
+        session_file = old.resume_session if old is not None else (record.session_file if record else None)
+        session_selector = record.session_id if record and record.session_id else session_file
+        if not session_selector:
+            raise PrimeRpcError("Cannot recover failed Prime worker without a session identifier")
+
         logger.warning(
             "Prime session for Telegram chat %s is bound to an unreclaimable failed worker; "
-            "starting a fresh session without deleting the old session file",
+            "attempting daemon recovery before creating a fresh session",
+            chat_id,
+        )
+        if await self._retry_failed_worker(session_selector):
+            try:
+                resumed = await self._start_session(chat_id, resume=session_file)
+            except PrimeRpcError:
+                logger.warning("Prime daemon retry completed but resume failed for chat %s", chat_id)
+            else:
+                await self.persist(chat_id, resumed)
+                self.sessions[chat_id] = resumed
+                if old is not None and old is not resumed:
+                    await old.close()
+                await self._notify_recovery(
+                    chat_id,
+                    "Prime session recovery succeeded; the previous session was restored.",
+                )
+                return resumed
+
+        logger.warning(
+            "Prime daemon recovery failed for Telegram chat %s; starting a fresh session "
+            "without deleting the old session file",
             chat_id,
         )
         fresh = await self._start_session(chat_id, resume=None)
