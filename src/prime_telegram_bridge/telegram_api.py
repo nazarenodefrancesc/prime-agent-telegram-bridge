@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -76,6 +79,164 @@ def split_telegram_text(text: str, limit: int = SAFE_CHUNK) -> list[str]:
     return chunks
 
 
+def _find_closing_marker(text: str, marker: str, start: int) -> int:
+    """Find a practical closing delimiter without consuming a longer star run."""
+    search_from = start
+    while True:
+        index = text.find(marker, search_from)
+        if index < 0:
+            return -1
+        after = index + len(marker)
+        if marker == "**" and after < len(text) and text[after] == "*":
+            search_from = index + 1
+            continue
+        return index
+
+
+def _safe_link_target(url: str) -> bool:
+    parsed = urlsplit(url)
+    return parsed.scheme.lower() in {"http", "https", "tg", "mailto"}
+
+
+def _render_inline_markdown(text: str) -> str:
+    """Render a conservative Markdown subset into Telegram-safe HTML."""
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            out.append(html.escape(text[index + 1], quote=False))
+            index += 2
+            continue
+
+        if text[index] == "`":
+            end = text.find("`", index + 1)
+            if end >= 0:
+                out.append(f"<code>{html.escape(text[index + 1:end], quote=False)}</code>")
+                index = end + 1
+                continue
+
+        if text.startswith("**", index):
+            end = _find_closing_marker(text, "**", index + 2)
+            if end >= 0:
+                out.append(f"<b>{_render_inline_markdown(text[index + 2:end])}</b>")
+                index = end + 2
+                continue
+
+        if text.startswith("__", index):
+            end = text.find("__", index + 2)
+            if end >= 0:
+                out.append(f"<b>{_render_inline_markdown(text[index + 2:end])}</b>")
+                index = end + 2
+                continue
+
+        if text.startswith("~~", index):
+            end = text.find("~~", index + 2)
+            if end >= 0:
+                out.append(f"<s>{_render_inline_markdown(text[index + 2:end])}</s>")
+                index = end + 2
+                continue
+
+        if text[index] == "*":
+            end = text.find("*", index + 1)
+            if end >= 0:
+                out.append(f"<i>{_render_inline_markdown(text[index + 1:end])}</i>")
+                index = end + 1
+                continue
+
+        if text[index] == "[":
+            label_end = text.find("](", index + 1)
+            if label_end >= 0:
+                url_end = text.find(")", label_end + 2)
+                if url_end >= 0:
+                    target = text[label_end + 2:url_end].strip()
+                    if _safe_link_target(target):
+                        label = _render_inline_markdown(text[index + 1:label_end])
+                        href = html.escape(target, quote=True)
+                        out.append(f'<a href="{href}">{label}</a>')
+                        index = url_end + 1
+                        continue
+
+        out.append(html.escape(text[index], quote=False))
+        index += 1
+
+    return "".join(out)
+
+
+_FENCE_RE = re.compile(r"^\s*```(?:[^\n]*)$")
+_HEADING_RE = re.compile(r"^(\s{0,3})#{1,6}\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-+*]\s+(.*)$")
+_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+
+
+def _render_markdown_chunk(text: str, *, in_fence: bool) -> tuple[str, bool]:
+    """Render one source chunk and return whether a fenced code block remains open."""
+    out: list[str] = []
+    fence_open = in_fence
+    if fence_open:
+        out.append("<pre><code>")
+
+    for line in text.splitlines(keepends=True):
+        body = line[:-1] if line.endswith("\n") else line
+        newline = "\n" if line.endswith("\n") else ""
+
+        if _FENCE_RE.match(body):
+            if fence_open:
+                out.append("</code></pre>")
+                fence_open = False
+            else:
+                out.append("<pre><code>")
+                fence_open = True
+            continue
+
+        if fence_open:
+            out.append(html.escape(body, quote=False))
+            out.append(newline)
+            continue
+
+        heading = _HEADING_RE.match(body)
+        if heading:
+            out.append(f"<b>{_render_inline_markdown(heading.group(2))}</b>")
+            out.append(newline)
+            continue
+
+        bullet = _BULLET_RE.match(body)
+        if bullet:
+            out.append(f"{bullet.group(1)}• {_render_inline_markdown(bullet.group(2))}")
+            out.append(newline)
+            continue
+
+        quote = _QUOTE_RE.match(body)
+        if quote:
+            out.append(f"<blockquote>{_render_inline_markdown(quote.group(1))}</blockquote>")
+            out.append(newline)
+            continue
+
+        out.append(_render_inline_markdown(body))
+        out.append(newline)
+
+    # Every Telegram message chunk must contain balanced HTML. Carry the
+    # logical fence state to the next source chunk, but close this chunk here.
+    if fence_open:
+        out.append("</code></pre>")
+
+    return "".join(out), fence_open
+
+
+def markdown_to_telegram_html_chunks(text: str, limit: int = SAFE_CHUNK) -> list[str]:
+    """Convert Prime Markdown to balanced Telegram HTML chunks.
+
+    Chunk the Markdown source before rendering so Telegram's post-entity text
+    length remains below the UTF-16 bound while generated HTML tags stay valid.
+    """
+    chunks = split_telegram_text(text, limit=limit)
+    rendered: list[str] = []
+    in_fence = False
+    for chunk in chunks:
+        html_chunk, in_fence = _render_markdown_chunk(chunk, in_fence=in_fence)
+        rendered.append(html_chunk)
+    return rendered
+
+
 def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
     message = update.get("message")
     if not isinstance(message, dict):
@@ -94,8 +255,6 @@ def parse_update(update: dict[str, Any]) -> IncomingMessage | None:
             photo_file_id = candidate.get("file_id")
     document = message.get("document") if isinstance(message.get("document"), dict) else None
 
-    # Ignore stickers, service messages, locations, etc. until explicitly
-    # supported. Otherwise an empty update would accidentally trigger Prime.
     if not str(text).strip() and not photo_file_id and document is None:
         return None
 
@@ -162,10 +321,11 @@ class TelegramClient:
         return [item for item in result if isinstance(item, dict)]
 
     async def send_message(self, chat_id: int, text: str, *, reply_to_message_id: int | None = None) -> None:
-        for index, chunk in enumerate(split_telegram_text(text)):
+        for index, chunk in enumerate(markdown_to_telegram_html_chunks(text)):
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": chunk,
+                "parse_mode": "HTML",
                 "link_preview_options": {"is_disabled": True},
             }
             if index == 0 and reply_to_message_id is not None:
