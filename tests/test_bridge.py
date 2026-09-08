@@ -8,7 +8,7 @@ import pytest
 
 from prime_telegram_bridge.bridge import PrimeSessionManager, TelegramPrimeBridge
 from prime_telegram_bridge.config import BridgeConfig
-from prime_telegram_bridge.prime_rpc import PrimeAgentOutcome, PrimeRpcError
+from prime_telegram_bridge.prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcSession
 from prime_telegram_bridge.state import ChatSessionRecord
 from prime_telegram_bridge.telegram_api import IncomingMessage
 
@@ -24,6 +24,7 @@ def make_config(tmp_path: Path) -> BridgeConfig:
         prime_agent_bin="prime-agent",
         prime_workdir=tmp_path,
         prime_session_dir=tmp_path / "sessions",
+        prime_rpc_max_line_bytes=16 * 1024 * 1024,
         prime_provider=None,
         prime_model=None,
         prime_thinking=None,
@@ -134,6 +135,73 @@ async def test_normal_get_does_not_destroy_mapping_on_resume_startup_error(tmp_p
     assert record.session_file == str(saved)
 
 
+
+
+@pytest.mark.asyncio
+async def test_failed_worker_resume_is_replaced_with_fresh_session(tmp_path: Path):
+    notices: list[tuple[int, str]] = []
+
+    async def recovery_handler(chat_id: int, message: str) -> None:
+        notices.append((chat_id, message))
+
+    manager = PrimeSessionManager(make_config(tmp_path), recovery_handler=recovery_handler)
+    saved = tmp_path / "old.jsonl"
+    saved.write_text("history", encoding="utf-8")
+    manager.store.set(ChatSessionRecord(chat_id=99, session_file=str(saved)))
+    fresh = FakeSession(str(tmp_path / "fresh.jsonl"))
+    attempts: list[str | None] = []
+
+    async def start_session(_chat_id: int, *, resume: str | None):
+        attempts.append(resume)
+        if resume is not None:
+            raise PrimeRpcError(
+                f'Session "{resume}" is registered to a failed worker that could not be safely reclaimed'
+            )
+        return fresh
+
+    manager._start_session = start_session  # type: ignore[method-assign]
+    result = await manager.get(99)
+    assert result is fresh
+    assert attempts == [str(saved), None]
+    assert saved.read_text(encoding="utf-8") == "history"
+    record = manager.store.get(99)
+    assert record is not None
+    assert record.session_file == str(tmp_path / "fresh.jsonl")
+    assert len(notices) == 1
+    assert notices[0][0] == 99
+    assert "fresh Prime session" in notices[0][1]
+
+
+@pytest.mark.asyncio
+async def test_dead_in_memory_session_recovers_only_for_exact_failed_worker_state(tmp_path: Path):
+    manager = PrimeSessionManager(make_config(tmp_path))
+    saved = tmp_path / "old.jsonl"
+    saved.write_text("history", encoding="utf-8")
+    manager.store.set(ChatSessionRecord(chat_id=99, session_file=str(saved)))
+    dead = PrimeRpcSession(make_config(tmp_path), resume_session=str(saved), chat_id=99)
+
+    async def failed_restart() -> None:
+        raise PrimeRpcError("failed worker that could not be safely reclaimed")
+
+    dead.start = failed_restart  # type: ignore[method-assign]
+    manager.sessions[99] = dead
+    fresh = FakeSession(str(tmp_path / "fresh.jsonl"))
+    attempts: list[str | None] = []
+
+    async def start_session(_chat_id: int, *, resume: str | None):
+        attempts.append(resume)
+        assert resume is None
+        return fresh
+
+    manager._start_session = start_session  # type: ignore[method-assign]
+    result = await manager.get(99)
+    assert result is fresh
+    assert attempts == [None]
+    record = manager.store.get(99)
+    assert record is not None
+    assert record.session_file == str(tmp_path / "fresh.jsonl")
+
+
 @pytest.mark.asyncio
 async def test_new_recovers_from_unresumable_existing_session(tmp_path: Path):
     manager = PrimeSessionManager(make_config(tmp_path))
@@ -188,7 +256,12 @@ async def test_autonomous_prime_output_is_forwarded_to_telegram(tmp_path: Path):
 
     await bridge._on_prime_output(42, PrimeAgentOutcome(text="later result"))
     await bridge._on_prime_output(42, PrimeAgentOutcome(error="provider failed"))
-    assert fake.sent == [(42, "later result"), (42, "Prime Agent error: provider failed")]
+    await bridge._on_session_recovery(42, "fresh session")
+    assert fake.sent == [
+        (42, "later result"),
+        (42, "Prime Agent error: provider failed"),
+        (42, "Prime session recovery: fresh session"),
+    ]
 
 
 class AttachmentTelegram(FakeTelegram):

@@ -61,6 +61,7 @@ class BridgeConfig:
     prime_agent_bin: str
     prime_workdir: Path
     prime_session_dir: Path
+    prime_rpc_max_line_bytes: int
     prime_provider: str | None
     prime_model: str | None
     prime_thinking: str | None
@@ -111,6 +112,12 @@ def load_config(env: Mapping[str, str] | None = None) -> BridgeConfig:
         prime_agent_bin=env.get("PRIME_AGENT_BIN", "prime-agent").strip() or "prime-agent",
         prime_workdir=workdir,
         prime_session_dir=session_dir,
+        prime_rpc_max_line_bytes=_parse_int(
+            env.get("PRIME_RPC_MAX_LINE_BYTES"),
+            16 * 1024 * 1024,
+            "PRIME_RPC_MAX_LINE_BYTES",
+            64 * 1024,
+        ),
         prime_provider=(env.get("PRIME_PROVIDER") or "").strip() or None,
         prime_model=(env.get("PRIME_MODEL") or "").strip() or None,
         prime_thinking=_parse_thinking(env.get("PRIME_THINKING")),

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import BridgeConfig
-from .prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcSession
+from .prime_rpc import PrimeAgentOutcome, PrimeRpcError, PrimeRpcFrameTooLarge, PrimeRpcSession
 from .state import ChatSessionRecord, StateStore, cleanup_attachment_inbox, secure_directory
 from .telegram_api import IncomingMessage, TelegramClient, parse_update
 
@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 OutputHandler = Callable[[int, PrimeAgentOutcome], Awaitable[None]]
+RecoveryHandler = Callable[[int, str], Awaitable[None]]
+
+_FAILED_WORKER_RECLAIM_MARKER = "failed worker that could not be safely reclaimed"
+
+
+def _is_failed_worker_reclaim_error(error: BaseException) -> bool:
+    return _FAILED_WORKER_RECLAIM_MARKER in str(error).lower()
 
 
 def _safe_filename(name: str) -> str:
@@ -28,13 +35,20 @@ def _safe_filename(name: str) -> str:
 
 
 class PrimeSessionManager:
-    def __init__(self, config: BridgeConfig, *, output_handler: OutputHandler | None = None):
+    def __init__(
+        self,
+        config: BridgeConfig,
+        *,
+        output_handler: OutputHandler | None = None,
+        recovery_handler: RecoveryHandler | None = None,
+    ):
         self.config = config
         self.store = StateStore(config.state_dir / "state.json")
         self.sessions: dict[int, PrimeRpcSession] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._init_locks: dict[int, asyncio.Lock] = {}
         self._output_handler = output_handler
+        self._recovery_handler = recovery_handler
 
     def lock_for(self, chat_id: int) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())
@@ -63,9 +77,46 @@ class PrimeSessionManager:
         await session.start()
         return session
 
-    async def get(self, chat_id: int) -> PrimeRpcSession:
+    async def _notify_recovery(self, chat_id: int, message: str) -> None:
+        if not self._recovery_handler:
+            return
+        try:
+            await self._recovery_handler(chat_id, message)
+        except Exception:
+            logger.exception("Failed to send Prime session recovery notice for chat %s", chat_id)
+
+    async def _recover_failed_worker(
+        self,
+        chat_id: int,
+        *,
+        old: PrimeRpcSession | None,
+    ) -> PrimeRpcSession:
+        logger.warning(
+            "Prime session for Telegram chat %s is bound to an unreclaimable failed worker; "
+            "starting a fresh session without deleting the old session file",
+            chat_id,
+        )
+        fresh = await self._start_session(chat_id, resume=None)
+        await fresh.set_session_name(f"telegram-{chat_id}")
+        await self.persist(chat_id, fresh)
+        self.sessions[chat_id] = fresh
+        if old is not None and old is not fresh:
+            await old.close()
+        await self._notify_recovery(
+            chat_id,
+            "The previous Prime worker could not be safely reclaimed, so the bridge started "
+            "a fresh Prime session. The old session file was left untouched.",
+        )
+        return fresh
+
+    async def get(
+        self,
+        chat_id: int,
+        *,
+        recover_failed_worker: bool = True,
+    ) -> PrimeRpcSession:
         existing = self.sessions.get(chat_id)
-        if existing:
+        if existing and getattr(existing, "transport_alive", True):
             return existing
 
         # Separate initialization lock avoids deadlocking callers that already
@@ -73,8 +124,18 @@ class PrimeSessionManager:
         # messages from creating competing Prime sessions.
         async with self._init_lock_for(chat_id):
             existing = self.sessions.get(chat_id)
-            if existing:
+            if existing and getattr(existing, "transport_alive", True):
                 return existing
+
+            if isinstance(existing, PrimeRpcSession):
+                try:
+                    await existing.start()
+                    await self.persist(chat_id, existing)
+                    return existing
+                except PrimeRpcError as exc:
+                    if recover_failed_worker and _is_failed_worker_reclaim_error(exc):
+                        return await self._recover_failed_worker(chat_id, old=existing)
+                    raise
 
             record = self.store.get(chat_id)
             resume = record.session_file if record else None
@@ -83,7 +144,9 @@ class PrimeSessionManager:
             # State stores Prime's concrete sessionFile path. If it no longer
             # exists, recovery is unambiguous: there is nothing left to resume.
             # Other startup failures (auth, provider outage, incompatible Prime)
-            # are propagated instead of destroying a valid mapping.
+            # are propagated instead of destroying a valid mapping. The one
+            # narrowly recognized exception is Prime's unreclaimable failed-worker
+            # state, where keeping the mapping only guarantees repeated failure.
             if resume and not Path(resume).exists():
                 logger.warning(
                     "Stored Prime session file for Telegram chat %s is missing; starting a fresh session",
@@ -93,7 +156,12 @@ class PrimeSessionManager:
                 record = None
                 recovered = True
 
-            session = await self._start_session(chat_id, resume=resume)
+            try:
+                session = await self._start_session(chat_id, resume=resume)
+            except PrimeRpcError as exc:
+                if resume and recover_failed_worker and _is_failed_worker_reclaim_error(exc):
+                    return await self._recover_failed_worker(chat_id, old=None)
+                raise
             self.sessions[chat_id] = session
             if not record or recovered:
                 await session.set_session_name(f"telegram-{chat_id}")
@@ -118,7 +186,7 @@ class PrimeSessionManager:
     async def new(self, chat_id: int) -> tuple[bool, dict[str, Any]]:
         session: PrimeRpcSession | None = None
         try:
-            session = await self.get(chat_id)
+            session = await self.get(chat_id, recover_failed_worker=False)
             cancelled, state = await session.new_session()
         except Exception:
             # /new is an explicit request to abandon the old conversation. If
@@ -157,7 +225,11 @@ class TelegramPrimeBridge:
     def __init__(self, config: BridgeConfig):
         self.config = config
         self.telegram = TelegramClient(config.telegram_bot_token)
-        self.prime = PrimeSessionManager(config, output_handler=self._on_prime_output)
+        self.prime = PrimeSessionManager(
+            config,
+            output_handler=self._on_prime_output,
+            recovery_handler=self._on_session_recovery,
+        )
         self._stopping = asyncio.Event()
         self._update_tasks: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -179,6 +251,9 @@ class TelegramPrimeBridge:
             await self.telegram.send_message(chat_id, f"Prime Agent error: {outcome.error}")
         elif outcome.text:
             await self.telegram.send_message(chat_id, outcome.text)
+
+    async def _on_session_recovery(self, chat_id: int, message: str) -> None:
+        await self.telegram.send_message(chat_id, f"Prime session recovery: {message}")
 
     async def _cleanup_attachments_once(self) -> None:
         inbox = self.config.state_dir / "inbox"
@@ -409,6 +484,15 @@ class TelegramPrimeBridge:
                 stop_typing.set()
                 await asyncio.gather(typing_task, return_exceptions=True)
             await self.telegram.send_message(msg.chat_id, answer, reply_to_message_id=msg.message_id)
+        except PrimeRpcFrameTooLarge as exc:
+            logger.exception("Prime RPC frame too large while handling Telegram message %s", msg.message_id)
+            await self.telegram.send_message(
+                msg.chat_id,
+                f"Prime returned an RPC frame larger than {exc.max_line_bytes} bytes. "
+                "The original request was not retried. Send another message to let the bridge "
+                "attempt safe session recovery, or use /new to force a fresh session.",
+                reply_to_message_id=msg.message_id,
+            )
         except Exception:
             logger.exception("Failed handling Telegram message %s", msg.message_id)
             await self.telegram.send_message(

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.3 — 2026-09-08
+
+Prime RPC framing and failed-worker recovery hardening after a live Telegram request produced a JSONL event larger than asyncio's default 64 KiB line limit.
+
+### Fixed
+
+- Add `PRIME_RPC_MAX_LINE_BYTES` with a 16 MiB default and a 64 KiB minimum, and pass it to the asyncio subprocess stream limit so large Prime JSONL events are accepted without `LimitOverrunError`/`ValueError`.
+- Convert over-limit stdout frames into a specific `PrimeRpcFrameTooLarge` failure, fail pending work promptly, reap the RPC subprocess, and never automatically replay the ambiguous originating prompt.
+- Keep oversized stderr diagnostics non-fatal while recording a bounded marker instead of crashing the stderr reader.
+- Reap subprocesses before clearing the active process reference, preventing a close/read race from leaving subprocess pipe transports unclosed.
+- Automatically replace a persisted session only for Prime's explicit `failed worker that could not be safely reclaimed` state; generic resume/provider/auth failures still preserve the existing mapping.
+- Surface a Telegram notice when automatic failed-worker recovery starts a fresh Prime session, while leaving the old session file untouched.
+- Keep `/new` as the explicit general-purpose recovery path and avoid double-recovery by disabling automatic failed-worker replacement inside `/new`.
+
+### Unchanged
+
+- No automatic retry of accepted/possibly accepted Prime prompts.
+- No exactly-once guarantee across Telegram acknowledgement and Prime prompt admission.
+- No GitHub Actions/CI added.
+
 ## 0.1.2 — 2026-09-07
 
 Security/data-retention hardening after the repository was made public.

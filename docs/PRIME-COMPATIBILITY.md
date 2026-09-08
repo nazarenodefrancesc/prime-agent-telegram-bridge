@@ -48,3 +48,14 @@ This is safer than blindly calling `get_last_assistant_text` after every event, 
 5. Exercise an RLM child that reports back after the first parent turn and verify the later output reaches Telegram.
 6. Restart only the bridge and verify the same chat resumes its prior Prime conversation.
 7. If kernel survival matters, explicitly plant a Python variable before restart and verify it afterward; record the result for that Prime version rather than assuming it.
+
+
+## JSONL frame sizing
+
+Prime emits one JSON object per line, and `agent_end.messages` can make a single event materially larger than a normal text reply. Python asyncio subprocess streams default to a roughly 64 KiB line limit, which is too small for this protocol in real agent workloads. v0.1.3 passes `PRIME_RPC_MAX_LINE_BYTES` (16 MiB by default) as the subprocess stream limit. The bound is configurable but intentionally finite.
+
+If one stdout JSONL frame exceeds the configured bound, the bridge treats the RPC client transport as failed, fails pending waiters promptly, reaps the client process and does not replay the originating prompt because Prime may already have admitted or completed that work in its daemon.
+
+## Failed resident-worker recovery
+
+Prime may refuse a saved-session resume with `failed worker that could not be safely reclaimed`. v0.1.3 treats that exact lifecycle state differently from ordinary resume failures: it proves a fresh session can start and persist before replacing the Telegram mapping, leaves the previous session file on disk, and reports the recovery to the chat. Other startup/resume failures remain non-destructive.

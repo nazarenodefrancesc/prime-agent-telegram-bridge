@@ -18,7 +18,7 @@ Prime daemon/session + IPython + RLM subagents + continual harness
 
 The bridge owns only transport, access control, attachment staging, and `chat_id -> Prime session` mapping. Prime remains responsible for model/provider auth, session history, tools, IPython, RLM, compaction, refinement and recursive agents.
 
-v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and automatically expires staged documents after a configurable retention window.
+v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and staged-document retention. v0.1.3 raises the bounded Prime JSONL frame limit above asyncio's 64 KiB default and safely replaces only sessions that Prime explicitly reports as bound to an unreclaimable failed worker.
 
 ## Security model
 
@@ -69,11 +69,11 @@ prime-telegram-bridge
 - `/refine [instructions]` — invoke Prime continual-harness refinement.
 - `/help` — help.
 
-Normal text messages are forwarded to Prime. Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path. Staged documents are retained temporarily so later RLM/sub-agent work can still read them, then purged automatically (24 hours by default via `TELEGRAM_ATTACHMENT_RETENTION_HOURS`).
+Normal text messages are forwarded to Prime. Prime RPC JSONL frames are bounded by `PRIME_RPC_MAX_LINE_BYTES` (16 MiB by default), which is large enough for substantial `agent_end` payloads without making the transport unbounded. Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path. Staged documents are retained temporarily so later RLM/sub-agent work can still read them, then purged automatically (24 hours by default via `TELEGRAM_ATTACHMENT_RETENTION_HOURS`).
 
 ## Persistence and delivery semantics
 
-The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid.
+The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge proves a fresh session can start, replaces the Telegram mapping, leaves the old session file untouched, and notifies the chat. Other resume errors remain fail-closed and keep the existing mapping.
 
 Prime has used the same daemon-owned runtime for RPC as other clients since Prime Agent 0.3.2. That means an RPC client restart is **not equivalent to a guaranteed Prime worker reset**, but this bridge also does not promise that volatile IPython variables survive every bridge/client restart. Treat live kernel survival as a real-environment compatibility property and test it on your installed Prime version.
 

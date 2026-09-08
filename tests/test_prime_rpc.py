@@ -11,13 +11,16 @@ from prime_telegram_bridge.config import BridgeConfig
 from prime_telegram_bridge.prime_rpc import (
     PrimeAgentOutcome,
     PrimeRpcError,
+    PrimeRpcFrameTooLarge,
     PrimeRpcSession,
     _assistant_outcome_from_agent_end,
     _prime_subprocess_env,
 )
 
 
-def make_config(tmp_path: Path, binary: str) -> BridgeConfig:
+def make_config(
+    tmp_path: Path, binary: str, *, max_line_bytes: int = 16 * 1024 * 1024
+) -> BridgeConfig:
     return BridgeConfig(
         telegram_bot_token="x",
         telegram_allowed_user_ids=frozenset({1}),
@@ -28,6 +31,7 @@ def make_config(tmp_path: Path, binary: str) -> BridgeConfig:
         prime_agent_bin=binary,
         prime_workdir=tmp_path,
         prime_session_dir=tmp_path / "sessions",
+        prime_rpc_max_line_bytes=max_line_bytes,
         prime_provider=None,
         prime_model=None,
         prime_thinking=None,
@@ -257,3 +261,103 @@ async def test_autonomous_error_does_not_fall_back_to_stale_text(tmp_path: Path)
     await asyncio.wait_for(done.wait(), timeout=1)
     assert received == [PrimeAgentOutcome(error="later failure")]
     await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_size", [128 * 1024, 1024 * 1024])
+async def test_rpc_accepts_large_jsonl_agent_end_frames(tmp_path: Path, reply_size: int):
+    script = tmp_path / "large_rpc.py"
+    script.write_text(
+        f"""
+import json, sys
+from pathlib import Path
+reply_size = {reply_size}
+for raw in sys.stdin:
+    cmd=json.loads(raw); typ=cmd.get('type'); rid=cmd.get('id')
+    if typ=='get_state':
+        data = {{
+            'sessionFile': str(Path.cwd()/'large.jsonl'),
+            'sessionId': 'large',
+            'isStreaming': False,
+            'thinkingLevel': 'medium',
+        }}
+        print(json.dumps({{'id':rid,'type':'response','command':typ,'success':True,'data':data}}), flush=True)
+    elif typ=='prompt':
+        print(json.dumps({{'id':rid,'type':'response','command':typ,'success':True}}), flush=True)
+        print(json.dumps({{'type':'agent_start'}}), flush=True)
+        event = {{
+            'type':'agent_end',
+            'messages':[{{
+                'role':'assistant',
+                'content':[{{'type':'text','text':'x' * reply_size}}],
+                'stopReason':'stop',
+            }}],
+        }}
+        print(json.dumps(event), flush=True)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = make_wrapper(tmp_path, script, "large-prime")
+    session = PrimeRpcSession(make_config(tmp_path, str(wrapper)), chat_id=1)
+    try:
+        await session.start()
+        answer = await session.ask("large", timeout=5)
+        assert len(answer) == reply_size
+        assert answer.startswith("x")
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_rpc_frame_over_configured_limit_fails_without_prompt_replay(tmp_path: Path):
+    count_file = tmp_path / "prompt-count.txt"
+    script = tmp_path / "oversize_rpc.py"
+    script.write_text(
+        f"""
+import json, sys
+from pathlib import Path
+count_file = Path({str(count_file)!r})
+for raw in sys.stdin:
+    cmd=json.loads(raw); typ=cmd.get('type'); rid=cmd.get('id')
+    if typ=='get_state':
+        data = {{
+            'sessionFile': str(Path.cwd()/'oversize.jsonl'),
+            'sessionId': 'oversize',
+            'isStreaming': False,
+            'thinkingLevel': 'medium',
+        }}
+        print(json.dumps({{'id':rid,'type':'response','command':typ,'success':True,'data':data}}), flush=True)
+    elif typ=='prompt':
+        old = int(count_file.read_text()) if count_file.exists() else 0
+        count_file.write_text(str(old + 1))
+        print(json.dumps({{'id':rid,'type':'response','command':typ,'success':True}}), flush=True)
+        print(json.dumps({{'type':'agent_start'}}), flush=True)
+        event = {{
+            'type':'agent_end',
+            'messages':[{{
+                'role':'assistant',
+                'content':[{{'type':'text','text':'x' * (128 * 1024)}}],
+                'stopReason':'stop',
+            }}],
+        }}
+        print(json.dumps(event), flush=True)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper = make_wrapper(tmp_path, script, "oversize-prime")
+    config = make_config(tmp_path, str(wrapper), max_line_bytes=64 * 1024)
+    session = PrimeRpcSession(config, chat_id=1)
+    try:
+        await session.start()
+        with pytest.raises(PrimeRpcFrameTooLarge, match="not retried"):
+            await asyncio.wait_for(session.ask("oversize", timeout=60), timeout=3)
+        assert count_file.read_text() == "1"
+        # A caller can immediately make a new explicit RPC operation; start()
+        # waits for the failed reader to finish reaping the old subprocess.
+        state = await session.get_state(timeout=3)
+        assert state["sessionId"] == "oversize"
+        assert count_file.read_text() == "1"
+    finally:
+        await session.close()

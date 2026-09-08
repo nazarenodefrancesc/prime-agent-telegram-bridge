@@ -11,7 +11,8 @@ Run the bridge as a long-lived service only after Prime Agent itself works from 
 3. Send `/id` to the bot.
 4. Put returned `user_id` in `TELEGRAM_ALLOWED_USER_IDS`.
 5. Optionally set `TELEGRAM_ATTACHMENT_RETENTION_HOURS` (default `24`).
-6. Restart bridge and use `/status`.
+6. Optionally set `PRIME_RPC_MAX_LINE_BYTES` (default `16777216`, 16 MiB).
+7. Restart bridge and use `/status`.
 
 ## systemd user service
 
@@ -52,6 +53,10 @@ journalctl --user -u prime-telegram-bridge -f
 **Bridge restarted and Python variables appear missing** — do not assume either outcome. Prime RPC is daemon-owned in current Prime releases, but live worker/kernel survival depends on the concrete lifecycle/failure. Conversation/session JSONL persistence is the supported bridge contract; validate volatile kernel behavior with a real smoke test before relying on it.
 
 **Same Telegram message appears twice after a crash** — possible at the Telegram/Prime admission boundary. See T007 for future durable idempotency/reconciliation work.
+
+**Prime RPC reports `Separator is not found` / `chunk exceed the limit` / `LimitOverrunError`** — v0.1.3 raises the subprocess JSONL stream bound to 16 MiB by default via `PRIME_RPC_MAX_LINE_BYTES`. Frames above the configured bound fail promptly and the originating prompt is not retried automatically.
+
+**Prime reports `failed worker that could not be safely reclaimed`** — v0.1.3 recognizes only this explicit Prime lifecycle state as safe for automatic mapping replacement. The bridge starts and persists a fresh session first, leaves the old session file untouched, and notifies Telegram. Generic provider/auth/incompatible-session errors still preserve the old mapping. `/new` remains the explicit recovery command for all other cases.
 
 **Staged Telegram documents are accumulating** — v0.1.2 cleans `BRIDGE_STATE_DIR/inbox` at startup and hourly, deleting files older than `TELEGRAM_ATTACHMENT_RETENTION_HOURS` and empty chat directories. Symlinks are never followed.
 

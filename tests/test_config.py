@@ -67,3 +67,18 @@ def test_attachment_retention_defaults_to_24_hours_and_is_validated(tmp_path: Pa
     )
     with pytest.raises(ConfigError, match="TELEGRAM_ATTACHMENT_RETENTION_HOURS"):
         load_config({**base, "TELEGRAM_ATTACHMENT_RETENTION_HOURS": "0"})
+
+
+def test_prime_rpc_max_line_bytes_defaults_to_16_mib_and_is_bounded(tmp_path: Path):
+    base = {
+        "TELEGRAM_BOT_TOKEN": "token",
+        "BRIDGE_STATE_DIR": str(tmp_path / "state"),
+        "PRIME_WORKDIR": str(tmp_path),
+    }
+    assert load_config(base).prime_rpc_max_line_bytes == 16 * 1024 * 1024
+    assert (
+        load_config({**base, "PRIME_RPC_MAX_LINE_BYTES": "1048576"}).prime_rpc_max_line_bytes
+        == 1048576
+    )
+    with pytest.raises(ConfigError, match="PRIME_RPC_MAX_LINE_BYTES"):
+        load_config({**base, "PRIME_RPC_MAX_LINE_BYTES": "65535"})

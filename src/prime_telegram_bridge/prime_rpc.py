@@ -20,6 +20,17 @@ class PrimeRpcError(RuntimeError):
     pass
 
 
+class PrimeRpcFrameTooLarge(PrimeRpcError):
+    """Raised when one JSONL frame exceeds the configured transport bound."""
+
+    def __init__(self, max_line_bytes: int):
+        self.max_line_bytes = max_line_bytes
+        super().__init__(
+            f"Prime RPC JSONL frame exceeded PRIME_RPC_MAX_LINE_BYTES={max_line_bytes}; "
+            "the original request was not retried"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PrimeAgentOutcome:
     text: str | None = None
@@ -92,8 +103,19 @@ class PrimeRpcSession:
         self._listener_tasks: set[asyncio.Task[Any]] = set()
         self._stderr_tail: deque[str] = deque(maxlen=100)
         self.is_streaming = False
+        self._transport_closing = False
         self._start_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
+
+    @property
+    def transport_alive(self) -> bool:
+        return bool(
+            self.process
+            and self.process.returncode is None
+            and not self._transport_closing
+            and self._stdout_task
+            and not self._stdout_task.done()
+        )
 
     def add_agent_end_listener(self, listener: AgentEndListener) -> Callable[[], None]:
         self._agent_end_listeners.append(listener)
@@ -108,8 +130,18 @@ class PrimeRpcSession:
 
     async def start(self) -> None:
         async with self._start_lock:
-            if self.process and self.process.returncode is None:
+            if self.transport_alive:
                 return
+            if self.process and self.process.returncode is None:
+                stdout_task = self._stdout_task
+                if (
+                    self._transport_closing
+                    and stdout_task
+                    and stdout_task is not asyncio.current_task()
+                ):
+                    await asyncio.gather(stdout_task, return_exceptions=True)
+                if self.process and self.process.returncode is None:
+                    await self._close_process(self.process)
 
             secure_directory(self.config.prime_session_dir)
             args = [
@@ -135,6 +167,7 @@ class PrimeRpcSession:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    limit=self.config.prime_rpc_max_line_bytes,
                 )
             except FileNotFoundError as exc:
                 raise PrimeRpcError(
@@ -143,6 +176,7 @@ class PrimeRpcSession:
                 ) from exc
 
             self.process = process
+            self._transport_closing = False
             assert process.stdout and process.stderr
             self._stdout_task = asyncio.create_task(
                 self._read_stdout(process), name=f"prime-rpc-out-{self.chat_id}"
@@ -164,16 +198,26 @@ class PrimeRpcSession:
                 await self._close_process(process)
                 raise
 
+    @staticmethod
+    async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3)
+        except TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+
     async def _close_process(self, process: asyncio.subprocess.Process) -> None:
         if self.process is process:
             self.process = None
-        if process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+        await self._terminate_process(process)
 
     async def close(self) -> None:
         process = self.process
@@ -230,9 +274,20 @@ class PrimeRpcSession:
 
     async def _read_stdout(self, process: asyncio.subprocess.Process) -> None:
         assert process.stdout
+        transport_error: PrimeRpcError | None = None
         try:
             while True:
-                line = await process.stdout.readline()
+                try:
+                    line = await process.stdout.readline()
+                except ValueError:
+                    transport_error = PrimeRpcFrameTooLarge(self.config.prime_rpc_max_line_bytes)
+                    logger.error(
+                        "Prime RPC stdout frame exceeded %s bytes for Telegram chat %s; "
+                        "closing this client without replaying work",
+                        self.config.prime_rpc_max_line_bytes,
+                        self.chat_id,
+                    )
+                    break
                 if not line:
                     break
                 try:
@@ -275,20 +330,22 @@ class PrimeRpcSession:
                 elif event_type in {"error", "agent_error"}:
                     logger.error("Prime RPC event error for chat %s: %s", self.chat_id, payload)
         finally:
+            if self.process is process:
+                self._transport_closing = True
             code = process.returncode
-            err = PrimeRpcError(f"Prime RPC stdout closed (exit={code}). stderr: {self.stderr_tail()}")
+            err = transport_error or PrimeRpcError(
+                f"Prime RPC stdout closed (exit={code}). stderr: {self.stderr_tail()}"
+            )
             self._fail_pending_for_process(process, err)
             self._fail_waiters_for_process(process, err)
             if self.process is process:
-                self.process = None
                 self.is_streaming = False
-                # EOF is terminal for the JSONL transport. If a misbehaving
-                # child closed stdout while staying alive, do not orphan it.
-                if process.returncode is None:
-                    try:
-                        process.terminate()
-                    except ProcessLookupError:
-                        pass
+                # EOF is terminal for the JSONL transport. Reap the child before
+                # clearing self.process so a concurrent close() cannot cancel
+                # this reader while it is still terminating the subprocess.
+                await self._terminate_process(process)
+                if self.process is process:
+                    self.process = None
 
     def _publish_autonomous_agent_end(self, event: dict[str, Any]) -> None:
         outcome = _assistant_outcome_from_agent_end(event)
@@ -317,7 +374,16 @@ class PrimeRpcSession:
     async def _read_stderr(self, process: asyncio.subprocess.Process) -> None:
         assert process.stderr
         while True:
-            line = await process.stderr.readline()
+            try:
+                line = await process.stderr.readline()
+            except ValueError:
+                marker = (
+                    f"[Prime stderr frame exceeded {self.config.prime_rpc_max_line_bytes} "
+                    "bytes; discarded]"
+                )
+                self._stderr_tail.append(marker)
+                logger.warning("Prime[%s] %s", self.chat_id, marker)
+                continue
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
@@ -366,7 +432,7 @@ class PrimeRpcSession:
         return await self._send_on_process(process, command, timeout=timeout)
 
     async def start_if_needed(self) -> None:
-        if not self.process or self.process.returncode is not None:
+        if not self.transport_alive:
             await self.start()
 
     @staticmethod
