@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fix the interactive installer helpers so configuration prompts can update the
+  protected env file without passing shell code into the Python heredoc.
 - Make the one-command installer collect the Telegram bot token (hidden input)
   and numeric allowlist user ID interactively, aborting when either is missing.
 - Default `PRIME_WORKDIR` to the cloned repository when the env still contains

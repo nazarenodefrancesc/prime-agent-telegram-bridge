@@ -69,20 +69,6 @@ render_unit() {
   } >"$destination"
 }
 
-set_env_default() {
-  local key="$1" value="$2"
-  "$PYTHON_BIN" - "$ENV_FILE" "$key" "$value" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-key = sys.argv[2]
-value = sys.argv[3]
-defaults = {
-    "PRIME_AGENT_BIN": {"", "prime-agent"},
-    "PRIME_WORKDIR": {"", "/absolute/path/to/your/prime/workspace"},
-}
-
 set_env_value() {
   local key="$1" value="$2"
   printf '%s\n' "$value" | "$PYTHON_BIN" -c '
@@ -108,6 +94,32 @@ path.write_text("".join(lines), encoding="utf-8")
 ' "$ENV_FILE" "$key"
 }
 
+set_env_default() {
+  local key="$1" value="$2"
+  "$PYTHON_BIN" - "$ENV_FILE" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+defaults = {
+    "PRIME_AGENT_BIN": {"", "prime-agent"},
+    "PRIME_WORKDIR": {"", "/absolute/path/to/your/prime/workspace"},
+}
+
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines(keepends=True)
+for index, line in enumerate(lines):
+    newline = "\n" if line.endswith("\n") else ""
+    body = line[:-1] if newline else line
+    if body.startswith(f"{key}=") and body[len(key) + 1 :] in defaults[key]:
+        lines[index] = f"{key}={value}{newline}"
+        path.write_text("".join(lines), encoding="utf-8")
+        break
+PY
+}
+
 configure_telegram_identity() {
   if grep -q '^TELEGRAM_BOT_TOKEN=123456:replace_me$' "$ENV_FILE" \
     || grep -q '^TELEGRAM_BOT_TOKEN=$' "$ENV_FILE"; then
@@ -130,17 +142,6 @@ configure_telegram_identity() {
     set_env_value "TELEGRAM_ALLOWED_USER_IDS" "$telegram_user_id"
     unset telegram_user_id
   fi
-}
-text = path.read_text(encoding="utf-8")
-lines = text.splitlines(keepends=True)
-for index, line in enumerate(lines):
-    newline = "\n" if line.endswith("\n") else ""
-    body = line[:-1] if newline else line
-    if body.startswith(f"{key}=") and body[len(key) + 1 :] in defaults[key]:
-        lines[index] = f"{key}={value}{newline}"
-        path.write_text("".join(lines), encoding="utf-8")
-        break
-PY
 }
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "$PYTHON_BIN not found"

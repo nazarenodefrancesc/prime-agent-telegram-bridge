@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,65 @@ from pathlib import Path
 import pytest
 
 INSTALLER = Path(__file__).parents[1] / "scripts" / "install.sh"
+
+
+def test_env_value_helper_updates_existing_key_without_python_syntax_error(
+    tmp_path: Path,
+):
+    script = INSTALLER.read_text(encoding="utf-8")
+    match = re.search(
+        r"(?ms)^set_env_value\(\) \{.*?(?=^configure_telegram_identity\(\) \{)",
+        script,
+    )
+    assert match, "set_env_value helper must remain a standalone shell function"
+
+    env_file = tmp_path / "env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=old\nOTHER=value\n", encoding="utf-8")
+    helper = tmp_path / "helper.sh"
+    helper.write_text(
+        "#!/usr/bin/env bash\nset -Eeuo pipefail\n"
+        f"ENV_FILE={env_file!s}\n"
+        f"PYTHON_BIN={sys.executable!s}\n"
+        f"{match.group(0)}\n"
+        'set_env_value "TELEGRAM_BOT_TOKEN" "new"\n',
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+
+    subprocess.run([str(helper)], check=True, text=True, capture_output=True)
+
+    assert env_file.read_text(encoding="utf-8") == (
+        "TELEGRAM_BOT_TOKEN=new\nOTHER=value\n"
+    )
+
+
+def test_env_default_helper_executes_without_embedded_shell_code(tmp_path: Path):
+    script = INSTALLER.read_text(encoding="utf-8")
+    match = re.search(
+        r"(?ms)^set_env_default\(\) \{.*?(?=^command -v \"\$PYTHON_BIN\")",
+        script,
+    )
+    assert match, "set_env_default helper must be a complete standalone function"
+
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        "PRIME_AGENT_BIN=prime-agent\nPRIME_WORKDIR=/absolute/path/to/your/prime/workspace\n",
+        encoding="utf-8",
+    )
+    helper = tmp_path / "helper.sh"
+    helper.write_text(
+        "#!/usr/bin/env bash\nset -Eeuo pipefail\n"
+        f"ENV_FILE={env_file!s}\n"
+        f"PYTHON_BIN={sys.executable!s}\n"
+        f"{match.group(0)}\n"
+        'set_env_default "PRIME_WORKDIR" "/tmp/workspace"\n',
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+
+    subprocess.run([str(helper)], check=True, text=True, capture_output=True)
+
+    assert "PRIME_WORKDIR=/tmp/workspace\n" in env_file.read_text(encoding="utf-8")
 
 
 def test_installer_contract_is_safe_and_persistent():
