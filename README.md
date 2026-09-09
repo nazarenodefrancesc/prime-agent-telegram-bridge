@@ -13,10 +13,10 @@ prime-telegram-bridge
       ↓ JSONL RPC over stdio
 prime-agent --mode rpc
       ↓
-Prime daemon/session + IPython + RLM subagents + continual harness
+Prime daemon/session + Python runtime/REPL + RLM subagents + continual harness
 ```
 
-The bridge owns only transport, access control, attachment staging, and `chat_id -> Prime session` mapping. Prime remains responsible for model/provider auth, session history, tools, IPython, RLM, compaction, refinement and recursive agents.
+The bridge owns only transport, access control, attachment staging, and `chat_id -> Prime session` mapping. Prime remains responsible for model/provider auth, session history, tools, the Python runtime/REPL, RLM, compaction, refinement and recursive agents.
 
 v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridge is attached. v0.1.2 hardens secret logging and staged-document retention. v0.1.3 raises the bounded Prime JSONL frame limit above asyncio's 64 KiB default. v0.1.4 adds bounded graceful shutdown and failed-worker retry, but does not guarantee resident-worker continuity for Prime's client-owned RPC mode.
 
@@ -34,7 +34,7 @@ automatically with the user session.
 
 ### One-command install
 
-On a fresh machine, run this single shell line:
+On a machine that already has the prerequisites below, run this single shell line:
 
 ```bash
 git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
@@ -56,13 +56,17 @@ add your numeric Telegram user ID and restart the service.
 
 The installer is safe to run again: it reuses the existing virtualenv and
 configuration, never overwrites the protected env file, and rewrites only the
-bridge's user-service definition. If the env still contains placeholders, it
-installs and enables the service but waits for configuration before starting
-it.
+bridge's user-service definition. It validates the generated unit with
+`systemd-analyze verify` when that tool is available. If the env still contains
+placeholders, it installs and enables the service but waits for configuration
+before starting it.
 
 ### 1. Prerequisites
 
-- Linux with Python **3.11+**;
+- Linux with a working **systemd user service** manager;
+- Git;
+- Python **3.11+** with `venv` and `pip` support;
+- network access for installing Python dependencies;
 - an authenticated [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)
   installation;
 - a Telegram bot created with [@BotFather](https://t.me/BotFather).
@@ -70,9 +74,14 @@ it.
 Verify Prime first, using the same user that will run the bridge:
 
 ```bash
+command -v prime-agent
 prime-agent
 prime-agent model list
 ```
+
+If `command -v prime-agent` prints a path that may not be visible to the
+`systemd --user` manager (for example an nvm/pnpm-managed path), set
+`PRIME_AGENT_BIN` in the bridge env file to that **absolute executable path**.
 
 ### 2. Install the bridge
 
@@ -81,7 +90,6 @@ cloned repository:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e .
 ```
 
@@ -197,7 +205,7 @@ Normal text messages are forwarded to Prime. Prime RPC JSONL frames are bounded 
 
 The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge first asks Prime's daemon supervisor to retry that worker and retries the same `sessionFile`. Only if that fails does it prove a fresh session can start, replace the Telegram mapping, leave the old session file untouched, and notify the chat. Other resume errors remain fail-closed and keep the existing mapping. Prime's current RPC client-owned lifecycle may still complete the worker during a normal bridge shutdown; resident runtime continuity is not yet guaranteed.
 
-Prime has used the same daemon-owned runtime for RPC as other clients since Prime Agent 0.3.2. That means an RPC client restart is **not equivalent to a guaranteed Prime worker reset**, but this bridge also does not promise that volatile IPython variables survive every bridge/client restart. Treat live kernel survival as a real-environment compatibility property and test it on your installed Prime version.
+Prime RPC uses Prime's daemon worker infrastructure, but in Prime Agent 0.9.3 RPC sessions are **client-owned**. A normal RPC client shutdown can therefore complete the worker. The bridge does not promise that volatile Python runtime state survives every bridge/client restart; treat runtime continuity as a real-environment compatibility property and test it on your installed Prime version.
 
 Telegram delivery is intentionally closer to **at-least-once** than at-most-once: the bridge does not advance the polling acknowledgement past the oldest in-flight update. There is still no atomic transaction spanning Telegram acknowledgement and Prime prompt admission. A crash after Prime accepts a prompt but before Telegram acknowledgement can replay that update after restart.
 

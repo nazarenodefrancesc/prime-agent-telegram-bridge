@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fix the one-command installer systemd unit generation: preserve real absolute paths instead of feeding `EnvironmentFile=`, `WorkingDirectory=`, and `ExecStart=` unit-name escapes from `systemd-escape --path`.
+- Add a render-only installer diagnostic hook and validate generated units with `systemd-analyze verify` when available.
+- Make installer-generated units safe for spaces, `%`, `$`, and other special path characters, and disable ExecStart environment expansion for the executable path.
+- Avoid an unnecessary pip self-upgrade during install; improve virtualenv and Prime executable diagnostics.
+- Correct README wording for Prime 0.9.3: RPC is daemon-hosted but client-owned, and runtime continuity refers to the Python runtime/REPL rather than IPython.
+
 ## 0.1.3 — 2026-09-08
 
 Prime RPC framing and failed-worker recovery hardening after a live Telegram request produced a JSONL event larger than asyncio's default 64 KiB line limit.
@@ -64,7 +74,7 @@ Hardening release after a second architecture/security audit.
 ### Known limitations
 
 - The Telegram-to-Prime delivery boundary is not exactly-once. If Prime accepts a prompt and the bridge crashes before the Telegram update is safely acknowledged, that update can be replayed after restart.
-- Prime has used a daemon-owned runtime for RPC since Prime Agent 0.3.2, but this bridge does not claim that volatile IPython state survives every bridge/client restart. Verify that behavior against the installed Prime version before relying on it.
+- Prime RPC uses Prime's daemon worker infrastructure, but session ownership and runtime continuity depend on the installed Prime version. This bridge does not claim that volatile Python runtime state survives every bridge/client restart.
 - Outputs produced entirely while the bridge is offline are not yet reconciled back to Telegram after restart.
 
 ## 0.1.0
