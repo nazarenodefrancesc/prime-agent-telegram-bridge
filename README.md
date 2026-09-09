@@ -43,6 +43,17 @@ git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git 
   ./scripts/install.sh
 ```
 
+When the installer finishes, configure and start the service:
+
+```bash
+nano ~/.config/prime-telegram-bridge/env
+systemctl --user start prime-telegram-bridge.service
+```
+
+Set `TELEGRAM_BOT_TOKEN` and the absolute `PRIME_WORKDIR` in the env file.
+Leave `TELEGRAM_ALLOWED_USER_IDS` empty initially, send `/id` to the bot, then
+add your numeric Telegram user ID and restart the service.
+
 The installer is safe to run again: it reuses the existing virtualenv and
 configuration, never overwrites the protected env file, and rewrites only the
 bridge's user-service definition. If the env still contains placeholders, it
