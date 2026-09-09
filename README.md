@@ -32,6 +32,23 @@ The following is the shortest complete installation. It runs the bridge as a
 persistent **systemd user service**, so it restarts after failures and starts
 automatically with the user session.
 
+### One-command install
+
+On a fresh machine, run this single shell line:
+
+```bash
+git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
+  ~/prime-agent-telegram-bridge && \
+  cd ~/prime-agent-telegram-bridge && \
+  ./scripts/install.sh
+```
+
+The installer is safe to run again: it reuses the existing virtualenv and
+configuration, never overwrites the protected env file, and rewrites only the
+bridge's user-service definition. If the env still contains placeholders, it
+installs and enables the service but waits for configuration before starting
+it.
+
 ### 1. Prerequisites
 
 - Linux with Python **3.11+**;
@@ -48,7 +65,8 @@ prime-agent model list
 
 ### 2. Install the bridge
 
-From the cloned repository:
+If you used the one-command installer, skip to step 3. Otherwise, from the
+cloned repository:
 
 ```bash
 python3 -m venv .venv
@@ -81,6 +99,9 @@ Keep the token only in this protected file; never commit it or paste it into
 chat. Save with `Ctrl+O`, press `Enter`, then exit with `Ctrl+X`.
 
 ### 4. Install and start the persistent service
+
+If you used `./scripts/install.sh`, the unit has already been generated and
+enabled; skip to step 5. The manual procedure is:
 
 Copy the unit, then edit its two repository-dependent paths if necessary:
 
