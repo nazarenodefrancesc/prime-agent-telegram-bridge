@@ -26,36 +26,126 @@ Prime Agent can execute code and edit files with your local user permissions. **
 
 The Prime subprocess environment deliberately drops `TELEGRAM_*` and `BRIDGE_*` variables while retaining Prime/provider credentials. The bridge also suppresses token-bearing `httpx`/`httpcore` INFO request logs and applies final log-line secret redaction as defense-in-depth. This is **secret minimization, not a sandbox**. If Prime and the bridge run under the same Unix account, do not treat environment scrubbing as a hard isolation boundary. Use a separate user/container/VM if you need one.
 
-## Quick start
+## Installation
 
-1. Install and verify [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) separately:
+The following is the shortest complete installation. It runs the bridge as a
+persistent **systemd user service**, so it restarts after failures and starts
+automatically with the user session.
+
+### 1. Prerequisites
+
+- Linux with Python **3.11+**;
+- an authenticated [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)
+  installation;
+- a Telegram bot created with [@BotFather](https://t.me/BotFather).
+
+Verify Prime first, using the same user that will run the bridge:
 
 ```bash
 prime-agent
 prime-agent model list
 ```
 
-2. Create a Telegram bot with BotFather and copy the token.
+### 2. Install the bridge
 
-3. Install the bridge:
+From the cloned repository:
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-cp .env.example .env
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
 ```
 
-4. Export the variables in `.env` (or use your preferred secret manager). At first leave `TELEGRAM_ALLOWED_USER_IDS` empty, start the bridge, then send `/id` to the bot.
+The commands below assume this repository is located at
+`~/prime-agent-telegram-bridge`. If it is elsewhere, replace that path in the
+service file before enabling it.
+
+### 3. Create the protected configuration
 
 ```bash
-set -a
-. ./.env
-set +a
-prime-telegram-bridge
+mkdir -p ~/.config/prime-telegram-bridge
+cp .env.example ~/.config/prime-telegram-bridge/env
+chmod 600 ~/.config/prime-telegram-bridge/env
+nano ~/.config/prime-telegram-bridge/env
 ```
 
-5. Put the returned `user_id` into `TELEGRAM_ALLOWED_USER_IDS` and restart.
+Set at least these values in the editor:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=YOUR_BOTFATHER_TOKEN
+PRIME_WORKDIR=/absolute/path/to/your/prime/workspace
+TELEGRAM_ALLOWED_USER_IDS=
+```
+
+Keep the token only in this protected file; never commit it or paste it into
+chat. Save with `Ctrl+O`, press `Enter`, then exit with `Ctrl+X`.
+
+### 4. Install and start the persistent service
+
+Copy the unit, then edit its two repository-dependent paths if necessary:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/prime-telegram-bridge.service.example \
+  ~/.config/systemd/user/prime-telegram-bridge.service
+nano ~/.config/systemd/user/prime-telegram-bridge.service
+```
+
+The unit must point `ExecStart` to this repository's virtualenv, for example:
+
+```ini
+ExecStart=%h/prime-agent-telegram-bridge/.venv/bin/prime-telegram-bridge
+```
+
+Then enable and start it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now prime-telegram-bridge.service
+systemctl --user show prime-telegram-bridge.service \
+  -p ActiveState -p SubState -p MainPID -p NRestarts
+```
+
+Expected result: `ActiveState=active`, `SubState=running`, and
+`NRestarts=0`.
+
+### 5. Authorize your Telegram account
+
+The service starts fail-closed: while `TELEGRAM_ALLOWED_USER_IDS` is empty,
+only `/id` is available.
+
+1. Send `/id` to the bot.
+2. Copy your numeric `user_id` into `~/.config/prime-telegram-bridge/env`.
+3. Restart the service:
+
+```bash
+nano ~/.config/prime-telegram-bridge/env
+systemctl --user restart prime-telegram-bridge.service
+```
+
+Test with `/status` and then a normal message. Do **not** use `/new` for a
+restart test: `/new` intentionally creates an empty Prime session. If a saved
+Prime worker cannot be recovered, the bridge tries Prime-native recovery and
+then falls back to bounded transcript recovery, informing both Prime and the
+Telegram chat that runtime-only state was not restored.
+
+### Service commands
+
+```bash
+# Current state, without dumping historical logs
+systemctl --user show prime-telegram-bridge.service \
+  -p ActiveState -p SubState -p MainPID -p NRestarts -p ExecMainStatus
+
+# Restart after changing code or env
+systemctl --user restart prime-telegram-bridge.service
+
+# Follow recent operational logs
+journalctl --user -u prime-telegram-bridge.service -f
+```
+
+Do not use `systemctl status --full` when troubleshooting old installations:
+historical HTTP logs from versions before v0.1.2 may contain a revoked Telegram
+token. Rotate the token with BotFather if it was ever exposed.
 
 ## Telegram commands
 

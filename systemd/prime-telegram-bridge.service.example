@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/prime-telegram-bridge/env
-ExecStart=%h/.local/bin/prime-telegram-bridge
+WorkingDirectory=%h/prime-agent-telegram-bridge
+ExecStart=%h/prime-agent-telegram-bridge/.venv/bin/prime-telegram-bridge
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
