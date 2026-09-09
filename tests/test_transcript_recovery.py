@@ -58,9 +58,15 @@ def test_capsule_is_bounded_and_labels_history_as_data():
         transcript = Path(directory) / "session.jsonl"
         transcript.write_text(source, encoding="utf-8")
         result = parse_transcript(transcript)
-        capsule = build_recovery_capsule(result, max_turns=20, max_chars=300)
+        capsule = build_recovery_capsule(result, max_turns=20, max_chars=600)
 
+    assert capsule.startswith(
+        "[Conversation recovery context]\n\n"
+        "Prime session recovery: The previous Prime runtime could not be restored, "
+        "but its conversation history was recovered into a new session. "
+        "Runtime-only state was not recovered.\n\n"
+    )
     assert "historical conversation context" in capsule
     assert "USER:\nuno" in capsule
     assert "ASSISTANT:\ndue" in capsule
-    assert len(capsule) <= 300
+    assert len(capsule) <= 600

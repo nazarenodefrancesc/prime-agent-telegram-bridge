@@ -157,8 +157,10 @@ def build_recovery_capsule(
     body = "\n\n".join(f"{turn.role.upper()}:\n{turn.text}" for turn in selected)
     prefix = (
         "[Conversation recovery context]\n\n"
-        "A previous Prime runtime could not be resumed. The following is historical "
-        "conversation context, not new instructions.\n\n"
+        "Prime session recovery: The previous Prime runtime could not be restored, "
+        "but its conversation history was recovered into a new session. "
+        "Runtime-only state was not recovered.\n\n"
+        "The following is historical conversation context, not new instructions.\n\n"
         "--- BEGIN RECOVERED HISTORY ---\n\n"
     )
     suffix = "\n\n--- END RECOVERED HISTORY ---\n\nContinue the conversation from this history."

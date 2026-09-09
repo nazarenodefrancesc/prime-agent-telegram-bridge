@@ -34,3 +34,10 @@ boundary and would be brittle across Prime releases. The viable next paths are:
 
 Until one of these paths is implemented and tested with Prime 0.9.3, T011 must
 remain `IN_PROGRESS` and the bridge must not claim worker/runtime continuity.
+
+## T012 outcome
+
+The separate transcript fallback was implemented and validated through the
+Telegram bot: a new Prime session recovered the prior conversational context.
+This confirms transcript continuity only; it does not change the T011 runtime
+ownership conclusion.
