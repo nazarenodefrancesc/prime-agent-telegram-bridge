@@ -34,7 +34,7 @@ automatically with the user session.
 
 ### One-command install
 
-On a machine that already has the prerequisites below, run this single shell line:
+On a machine that already has the prerequisites below, run this single shell line and then send "/new" to the telegram bot.
 
 ```bash
 git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
