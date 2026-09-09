@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Make the one-command installer collect the Telegram bot token (hidden input)
+  and numeric allowlist user ID interactively, aborting when either is missing.
 - Default `PRIME_WORKDIR` to the cloned repository when the env still contains
   its placeholder, while preserving an explicitly configured workspace.
 - Populate `PRIME_AGENT_BIN` with the detected absolute Prime executable when

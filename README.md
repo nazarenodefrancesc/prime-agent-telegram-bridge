@@ -40,29 +40,26 @@ On a machine that already has the prerequisites below, run this single shell lin
 git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
   ~/prime-agent-telegram-bridge && \
   cd ~/prime-agent-telegram-bridge && \
-  ./scripts/install.sh
+  ./scripts/install.sh && \
+  systemctl --user start prime-telegram-bridge.service
 ```
 
-When the installer finishes, configure and start the service:
+During installation, the script asks interactively for:
 
-```bash
-nano ~/.config/prime-telegram-bridge/env
-systemctl --user start prime-telegram-bridge.service
-```
+- the bot token created with `@BotFather` (input is hidden);
+- your numeric Telegram user ID, obtained from `@userinfobot`.
 
-Set `TELEGRAM_BOT_TOKEN` in the env file. The installer automatically sets
-`PRIME_WORKDIR` to the cloned repository and detects the absolute
-`PRIME_AGENT_BIN` when Prime is on `PATH`. Change `PRIME_WORKDIR` only if Prime
-should work in a different workspace. Leave `TELEGRAM_ALLOWED_USER_IDS` empty
-initially, send `/id` to the bot, then add your numeric Telegram user ID and
-restart the service.
+If either value is missing or invalid, installation aborts before the final
+`systemctl start`. The installer writes both values directly to the protected
+env file, automatically sets `PRIME_WORKDIR` to the cloned repository, and
+detects the absolute `PRIME_AGENT_BIN` when Prime is on `PATH`. Change
+`PRIME_WORKDIR` later only if Prime should work in a different workspace.
 
 The installer is safe to run again: it reuses the existing virtualenv and
-configuration, never overwrites the protected env file, and rewrites only the
-bridge's user-service definition. It validates the generated unit with
-`systemd-analyze verify` when that tool is available. If the env still contains
-placeholders, it installs and enables the service but waits for configuration
-before starting it.
+configuration, and rewrites only the bridge's user-service definition. It
+validates the generated unit with `systemd-analyze verify` when that tool is
+available. On a rerun, already configured values are preserved and no secret
+is printed.
 
 ### 1. Prerequisites
 

@@ -82,6 +82,55 @@ defaults = {
     "PRIME_AGENT_BIN": {"", "prime-agent"},
     "PRIME_WORKDIR": {"", "/absolute/path/to/your/prime/workspace"},
 }
+
+set_env_value() {
+  local key="$1" value="$2"
+  printf '%s\n' "$value" | "$PYTHON_BIN" -c '
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.stdin.readline().rstrip("\r\n")
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines(keepends=True)
+replacement = f"{key}={value}\n"
+for index, line in enumerate(lines):
+    body = line[:-1] if line.endswith("\n") else line
+    if body.startswith(f"{key}="):
+        lines[index] = replacement
+        break
+else:
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines.append(replacement)
+path.write_text("".join(lines), encoding="utf-8")
+' "$ENV_FILE" "$key"
+}
+
+configure_telegram_identity() {
+  if grep -q '^TELEGRAM_BOT_TOKEN=123456:replace_me$' "$ENV_FILE" \
+    || grep -q '^TELEGRAM_BOT_TOKEN=$' "$ENV_FILE"; then
+    echo "Telegram bot token required. Create/retrieve it with @BotFather."
+    local telegram_token
+    IFS= read -r -s -p "Paste the bot token (input hidden): " telegram_token
+    printf '\n'
+    [[ -n "$telegram_token" ]] || die "Telegram bot token is required"
+    set_env_value "TELEGRAM_BOT_TOKEN" "$telegram_token"
+    unset telegram_token
+  fi
+
+  if grep -q '^TELEGRAM_ALLOWED_USER_IDS=$' "$ENV_FILE"; then
+    echo "Telegram user ID required. Retrieve it by messaging @userinfobot."
+    local telegram_user_id
+    IFS= read -r -p "Enter your numeric Telegram user ID: " telegram_user_id
+    [[ -n "$telegram_user_id" ]] || die "Telegram user ID is required"
+    [[ "$telegram_user_id" =~ ^[0-9]+$ ]] \
+      || die "Telegram user ID is required and must be numeric"
+    set_env_value "TELEGRAM_ALLOWED_USER_IDS" "$telegram_user_id"
+    unset telegram_user_id
+  fi
+}
 text = path.read_text(encoding="utf-8")
 lines = text.splitlines(keepends=True)
 for index, line in enumerate(lines):
@@ -140,6 +189,7 @@ set_env_default "PRIME_WORKDIR" "$REPO_DIR"
 if [[ -n "$prime_agent_path" ]]; then
   set_env_default "PRIME_AGENT_BIN" "$prime_agent_path"
 fi
+configure_telegram_identity
 
 echo "[4/6] Installing user service"
 mkdir -p "$UNIT_DIR"
@@ -158,26 +208,8 @@ if command -v loginctl >/dev/null 2>&1; then
   loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
 fi
 
-configured=true
-if grep -q '^TELEGRAM_BOT_TOKEN=123456:replace_me$' "$ENV_FILE" \
-  || grep -q '^TELEGRAM_BOT_TOKEN=$' "$ENV_FILE"; then
-  configured=false
-fi
-if grep -q '^PRIME_WORKDIR=/absolute/path/to/your/prime/workspace$' "$ENV_FILE" \
-  || grep -q '^PRIME_WORKDIR=$' "$ENV_FILE"; then
-  configured=false
-fi
-
-if [[ "$configured" == true ]]; then
-  echo "[6/6] Starting service"
-  systemctl --user restart "$SERVICE_NAME"
-  systemctl --user show "$SERVICE_NAME" \
-    -p ActiveState -p SubState -p MainPID -p NRestarts -p ExecMainStatus
-else
-  echo "[6/6] Service installed but not started: configuration is incomplete"
-  echo "Edit: $ENV_FILE"
-  echo "Then run: systemctl --user start $SERVICE_NAME"
-fi
+echo "[6/6] Configuration complete; service enabled but not started"
+echo "Start it with: systemctl --user start $SERVICE_NAME"
 
 echo
 echo "Installation complete. Unit: $UNIT_FILE"
