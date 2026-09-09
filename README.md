@@ -22,26 +22,24 @@ v0.1.1 added forwarding of **later Prime runs** back to Telegram while the bridg
 
 ## Security model
 
-Prime Agent can execute code and edit files with your local user permissions. **Never expose this bot publicly without an allowlist.** The bridge fails closed for agent access: if `TELEGRAM_ALLOWED_USER_IDS` is empty, only `/id` works.
+Prime Agent can execute code and edit files with your local user permissions. **Never expose this bot publicly without an allowlist.** The bridge fails closed for agent access.
 
 The Prime subprocess environment deliberately drops `TELEGRAM_*` and `BRIDGE_*` variables while retaining Prime/provider credentials. The bridge also suppresses token-bearing `httpx`/`httpcore` INFO request logs and applies final log-line secret redaction as defense-in-depth. This is **secret minimization, not a sandbox**. If Prime and the bridge run under the same Unix account, do not treat environment scrubbing as a hard isolation boundary. Use a separate user/container/VM if you need one.
 
 ## Installation
 
-The following is the shortest complete installation. It runs the bridge as a
-persistent **systemd user service**, so it restarts after failures and starts
-automatically with the user session.
+The shortest setup is the interactive installer below. It installs the bridge as a persistent **systemd user service**, asks for your Telegram credentials, generates the protected configuration, and enables the service.
 
 ### One-command install
 
-On a machine that already has the prerequisites below, run this single shell line:
+On a machine that already has the prerequisites below, run this single shell command:
 
 ```bash
 git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
   ~/prime-agent-telegram-bridge && \
   cd ~/prime-agent-telegram-bridge && \
   ./scripts/install.sh && \
-  systemctl --user start prime-telegram-bridge.service
+  systemctl --user restart prime-telegram-bridge.service
 ```
 
 During installation, the script asks interactively for:
@@ -49,26 +47,27 @@ During installation, the script asks interactively for:
 - the bot token created with `@BotFather` (input is hidden);
 - your numeric Telegram user ID, obtained from `@userinfobot`.
 
-If either value is missing or invalid, installation aborts before the final
-`systemctl start`. The installer writes both values directly to the protected
-env file, automatically sets `PRIME_WORKDIR` to the cloned repository, and
-detects the absolute `PRIME_AGENT_BIN` when Prime is on `PATH`. Change
-`PRIME_WORKDIR` later only if Prime should work in a different workspace.
+The installer aborts if the bot token is missing or if the Telegram user ID is missing/non-numeric.
 
-The installer is safe to run again: it reuses the existing virtualenv and
-configuration, and rewrites only the bridge's user-service definition. It
-validates the generated unit with `systemd-analyze verify` when that tool is
-available. On a rerun, already configured values are preserved and no secret
-is printed.
+It writes both values directly to the protected env file, automatically sets `PRIME_WORKDIR` to the cloned repository, and detects the absolute `PRIME_AGENT_BIN` when Prime is on `PATH`. Change `PRIME_WORKDIR` later only if Prime should work in a different workspace.
 
-### 1. Prerequisites
+The installer is safe to run again: it reuses the existing virtualenv and configuration, preserves already configured values, and rewrites only the bridge's user-service definition. It validates the generated unit with `systemd-analyze verify` when that tool is available. No secret is printed.
+
+When installation completes:
+
+1. open the Telegram bot;
+2. send `/status`;
+3. send a normal message to Prime.
+
+You do **not** need to send `/new` after installation. `/new` intentionally starts a fresh Prime session and is only needed when you explicitly want one.
+
+### Prerequisites
 
 - Linux with a working **systemd user service** manager;
 - Git;
 - Python **3.11+** with `venv` and `pip` support;
 - network access for installing Python dependencies;
-- an authenticated [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)
-  installation;
+- an authenticated [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) installation;
 - a Telegram bot created with [@BotFather](https://t.me/BotFather).
 
 Verify Prime first, using the same user that will run the bridge:
@@ -79,25 +78,29 @@ prime-agent
 prime-agent model list
 ```
 
-If `command -v prime-agent` prints a path that may not be visible to the
-`systemd --user` manager (for example an nvm/pnpm-managed path), set
-`PRIME_AGENT_BIN` in the bridge env file to that **absolute executable path**.
+If `command -v prime-agent` prints a path that may not be visible to the `systemd --user` manager (for example an nvm/pnpm-managed path), set `PRIME_AGENT_BIN` in the bridge env file to that **absolute executable path**.
 
-### 2. Install the bridge
+---
 
-If you used the one-command installer, skip to step 3. Otherwise, from the
-cloned repository:
+## Manual installation
+
+Use this section only if you do not want to use `./scripts/install.sh`.
+
+### 1. Clone and install the bridge
 
 ```bash
+git clone https://github.com/nazarenodefrancesc/prime-agent-telegram-bridge.git \
+  ~/prime-agent-telegram-bridge
+
+cd ~/prime-agent-telegram-bridge
+
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-The commands below assume this repository is located at
-`~/prime-agent-telegram-bridge`. If it is elsewhere, replace that path in the
-service file before enabling it.
+The commands below assume this repository is located at `~/prime-agent-telegram-bridge`. If it is elsewhere, replace that path in the service file before enabling it.
 
-### 3. Create the protected configuration
+### 2. Create the protected configuration
 
 ```bash
 mkdir -p ~/.config/prime-telegram-bridge
@@ -111,23 +114,29 @@ Set at least these values in the editor:
 ```dotenv
 TELEGRAM_BOT_TOKEN=YOUR_BOTFATHER_TOKEN
 PRIME_WORKDIR=/absolute/path/to/your/prime/workspace
-TELEGRAM_ALLOWED_USER_IDS=
+TELEGRAM_ALLOWED_USER_IDS=YOUR_NUMERIC_TELEGRAM_USER_ID
 ```
 
-Keep the token only in this protected file; never commit it or paste it into
-chat. Save with `Ctrl+O`, press `Enter`, then exit with `Ctrl+X`.
+You can obtain your numeric Telegram user ID from `@userinfobot`.
 
-### 4. Install and start the persistent service
+Keep the token only in this protected file; never commit it or paste it into chat. Save with `Ctrl+O`, press `Enter`, then exit with `Ctrl+X`.
 
-If you used `./scripts/install.sh`, the unit has already been generated and
-enabled; skip to step 5. The manual procedure is:
+If Prime is not visible to the systemd user manager, set:
 
-Copy the unit, then edit its two repository-dependent paths if necessary:
+```dotenv
+PRIME_AGENT_BIN=/absolute/path/to/prime-agent
+```
+
+### 3. Install and start the persistent service
+
+Copy the example unit:
 
 ```bash
 mkdir -p ~/.config/systemd/user
+
 cp systemd/prime-telegram-bridge.service.example \
   ~/.config/systemd/user/prime-telegram-bridge.service
+
 nano ~/.config/systemd/user/prime-telegram-bridge.service
 ```
 
@@ -142,34 +151,28 @@ Then enable and start it:
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now prime-telegram-bridge.service
+
 systemctl --user show prime-telegram-bridge.service \
   -p ActiveState -p SubState -p MainPID -p NRestarts
 ```
 
-Expected result: `ActiveState=active`, `SubState=running`, and
-`NRestarts=0`.
+Expected result:
 
-### 5. Authorize your Telegram account
-
-The service starts fail-closed: while `TELEGRAM_ALLOWED_USER_IDS` is empty,
-only `/id` is available.
-
-1. Send `/id` to the bot.
-2. Copy your numeric `user_id` into `~/.config/prime-telegram-bridge/env`.
-3. Restart the service:
-
-```bash
-nano ~/.config/prime-telegram-bridge/env
-systemctl --user restart prime-telegram-bridge.service
+```text
+ActiveState=active
+SubState=running
+NRestarts=0
 ```
 
-Test with `/status` and then a normal message. Do **not** use `/new` for a
-restart test: `/new` intentionally creates an empty Prime session. If a saved
-Prime worker cannot be recovered, the bridge tries Prime-native recovery and
-then falls back to bounded transcript recovery, informing both Prime and the
-Telegram chat that runtime-only state was not restored.
+Then open the bot and test:
 
-### Service commands
+```text
+/status
+```
+
+followed by a normal message.
+
+## Service commands
 
 ```bash
 # Current state, without dumping historical logs
@@ -183,13 +186,11 @@ systemctl --user restart prime-telegram-bridge.service
 journalctl --user -u prime-telegram-bridge.service -f
 ```
 
-Do not use `systemctl status --full` when troubleshooting old installations:
-historical HTTP logs from versions before v0.1.2 may contain a revoked Telegram
-token. Rotate the token with BotFather if it was ever exposed.
+Do not use `systemctl status --full` when troubleshooting old installations: historical HTTP logs from versions before v0.1.2 may contain a revoked Telegram token. Rotate the token with BotFather if it was ever exposed.
 
 ## Telegram commands
 
-- `/id` — show Telegram user/chat IDs; available before authorization.
+- `/id` — show Telegram user/chat IDs.
 - `/status` — show Prime session/model status.
 - `/new` — start a fresh Prime session for this Telegram chat.
 - `/stop` — abort current Prime work.
@@ -199,11 +200,19 @@ token. Rotate the token with BotFather if it was ever exposed.
 - `/refine [instructions]` — invoke Prime continual-harness refinement.
 - `/help` — help.
 
-Normal text messages are forwarded to Prime. Prime RPC JSONL frames are bounded by `PRIME_RPC_MAX_LINE_BYTES` (16 MiB by default), which is large enough for substantial `agent_end` payloads without making the transport unbounded. Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path. Staged documents are retained temporarily so later RLM/sub-agent work can still read them, then purged automatically (24 hours by default via `TELEGRAM_ATTACHMENT_RETENTION_HOURS`).
+Normal text messages are forwarded to Prime. Prime RPC JSONL frames are bounded by `PRIME_RPC_MAX_LINE_BYTES` (16 MiB by default), which is large enough for substantial `agent_end` payloads without making the transport unbounded.
+
+Telegram photos are sent through the RPC image field. Documents are saved under the bridge-owned inbox and Prime receives their local path. Staged documents are retained temporarily so later RLM/sub-agent work can still read them, then purged automatically (24 hours by default via `TELEGRAM_ATTACHMENT_RETENTION_HOURS`).
 
 ## Persistence and delivery semantics
 
-The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`. On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge first asks Prime's daemon supervisor to retry that worker and retries the same `sessionFile`. Only if that fails does it prove a fresh session can start, replace the Telegram mapping, leave the old session file untouched, and notify the chat. Other resume errors remain fail-closed and keep the existing mapping. Prime's current RPC client-owned lifecycle may still complete the worker during a normal bridge shutdown; resident runtime continuity is not yet guaranteed.
+The mapping is stored atomically in `BRIDGE_STATE_DIR/state.json` with mode `0600`; bridge-owned directories are restricted to `0700` where supported. Prime session files live in `PRIME_SESSION_DIR`.
+
+On restart, the next message resumes the mapped Prime `sessionFile` when it is still valid. If Prime explicitly reports that the saved session is registered to a failed worker that cannot be safely reclaimed, the bridge first asks Prime's daemon supervisor to retry that worker and retries the same `sessionFile`.
+
+If that still fails, the bridge falls back to bounded transcript recovery when possible: it creates a fresh Prime session, safely restores recent conversational context from the previous transcript, leaves the old session file untouched, and informs the Telegram chat that runtime-only state was not recovered.
+
+Other resume errors remain fail-closed and keep the existing mapping.
 
 Prime RPC uses Prime's daemon worker infrastructure, but in Prime Agent 0.9.3 RPC sessions are **client-owned**. A normal RPC client shutdown can therefore complete the worker. The bridge does not promise that volatile Python runtime state survives every bridge/client restart; treat runtime continuity as a real-environment compatibility property and test it on your installed Prime version.
 
