@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Default `PRIME_WORKDIR` to the cloned repository when the env still contains
+  its placeholder, while preserving an explicitly configured workspace.
+- Populate `PRIME_AGENT_BIN` with the detected absolute Prime executable when
+  the env still contains its default value.
 - Fix the one-command installer systemd unit generation: preserve real absolute paths instead of feeding `EnvironmentFile=`, `WorkingDirectory=`, and `ExecStart=` unit-name escapes from `systemd-escape --path`.
 - Add a render-only installer diagnostic hook and validate generated units with `systemd-analyze verify` when available.
 - Make installer-generated units safe for spaces, `%`, `$`, and other special path characters, and disable ExecStart environment expansion for the executable path.

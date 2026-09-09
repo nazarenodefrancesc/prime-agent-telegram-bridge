@@ -26,6 +26,8 @@ def test_installer_contract_is_safe_and_persistent():
     assert "systemd-analyze verify" in script
     assert "TELEGRAM_BOT_TOKEN=123456:replace_me" in script
     assert "PRIME_WORKDIR=/absolute/path/to/your/prime/workspace" in script
+    assert 'set_env_default "PRIME_WORKDIR" "$REPO_DIR"' in script
+    assert 'set_env_default "PRIME_AGENT_BIN" "$prime_agent_path"' in script
 
 
 def test_rendered_systemd_unit_is_valid_with_special_paths(tmp_path: Path):

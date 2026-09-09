@@ -50,9 +50,12 @@ nano ~/.config/prime-telegram-bridge/env
 systemctl --user start prime-telegram-bridge.service
 ```
 
-Set `TELEGRAM_BOT_TOKEN` and the absolute `PRIME_WORKDIR` in the env file.
-Leave `TELEGRAM_ALLOWED_USER_IDS` empty initially, send `/id` to the bot, then
-add your numeric Telegram user ID and restart the service.
+Set `TELEGRAM_BOT_TOKEN` in the env file. The installer automatically sets
+`PRIME_WORKDIR` to the cloned repository and detects the absolute
+`PRIME_AGENT_BIN` when Prime is on `PATH`. Change `PRIME_WORKDIR` only if Prime
+should work in a different workspace. Leave `TELEGRAM_ALLOWED_USER_IDS` empty
+initially, send `/id` to the bot, then add your numeric Telegram user ID and
+restart the service.
 
 The installer is safe to run again: it reuses the existing virtualenv and
 configuration, never overwrites the protected env file, and rewrites only the
